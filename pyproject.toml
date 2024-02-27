@@ -1,7 +1,7 @@
 [project]
 authors = [{ name = "Daniel Ward", email = "danielward27@outlook.com" }]
 dependencies = ["flowjax", "equinox", "tqdm", "optax"]
-description = "Experiments and examples for paper."
+description = "Generalized neural posterior estimation implementation."
 name = "gnpe"
 readme = "README.md"
 requires-python = ">=3.10"
