@@ -97,7 +97,7 @@ class ContrastiveLoss(eqx.Module):
         guide = eqx.combine(params, static)
         guide_detatched = eqx.combine(stop_gradient(params), static)
 
-        contrastive_key, guide_key, predictive_key, combined_key = jr.split(key, 4)
+        contrastive_key, guide_key, predictive_key = jr.split(key, 3)
         proposal_samp = self.sample_proposal(guide_key, guide_detatched)
         x_samp = self.sample_predictive(predictive_key, proposal_samp)
         contrastive_samp = self.sample_proposal(
