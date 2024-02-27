@@ -85,19 +85,22 @@ class LocScaleHierarchicalModel(eqx.Module):
 
 
 class LocScaleHierarchicalGuide(eqx.Module):
-    loc: AbstractDistribution
-    scale: AbstractDistribution
+    loc_base: AbstractDistribution
+    scale_base: AbstractDistribution
     z: AbstractDistribution
     z_embedding_net: Callable
     n_obs: int
 
     """Construct a guide for LocScaleHierarchicalModel.
 
+    Note this defines a distribution over loc_base and scale_base, not loc and scale
+    directly.
+
     Args:
-        loc: The distribution over the prior location. This is a conditional
-            distribution that takes in the embedded z values.
-        scale: The distribution over the prior scale. This is a conditional distribution
-            taking in the embedded z values.
+        loc_base: The distribution over the prior location (in the base space). This is a
+            conditional distribution that takes in the embedded z values.
+        scale_base: The distribution over the prior scale (in the base space).
+            This is a conditional distribution taking in the embedded z values.
         z: The distribution over the likelihoods conditioning variable z. This
             is a conditional distribution taking in observations.
         z_embedding_net: The embedding network for z.
@@ -117,8 +120,8 @@ class LocScaleHierarchicalGuide(eqx.Module):
             z = sample("z", self.z, condition=obs)
 
         embed = vectorize(self.z_embedding_net, signature="(a)->(b)")(z).mean(0)
-        sample("loc_base", self.loc, condition=embed)
-        sample("scale_base", self.scale, condition=embed)
+        sample("loc_base", self.loc_base, condition=embed)
+        sample("scale_base", self.scale_base, condition=embed)
 
     def _argcheck(self, obs):
         if (s := obs.shape[-2]) != self.n_obs:
