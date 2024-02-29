@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from functools import partial
 
 import equinox as eqx
 import jax.random as jr
@@ -72,6 +73,7 @@ class ContrastiveLoss(eqx.Module):
     obs: Array
     n_contrastive: int
     obs_name: str
+    aux: bool
 
     def __init__(
         self,
@@ -80,12 +82,14 @@ class ContrastiveLoss(eqx.Module):
         obs: Array,
         obs_name: str,
         n_contrastive: int = 20,
+        aux: bool = False,
     ):
 
         self.model = model
         self.obs = obs
         self.n_contrastive = n_contrastive
         self.obs_name = obs_name
+        self.aux = aux
 
     @eqx.filter_jit
     def __call__(
@@ -106,8 +110,22 @@ class ContrastiveLoss(eqx.Module):
             n=self.n_contrastive,
         )
         proprosal_log_prob = log_density(guide, proposal_samp, obs=x_samp)[0]
-        normalizer = self.log_sum_exp_normalizer(guide, contrastive_samp, x_samp)
-        return -(proprosal_log_prob - normalizer)
+
+        log_proposal_contrasative, log_prior_contrastive = self.log_proposal_and_prior(
+            contrastive_samp,
+            guide,
+            x_samp,
+        )
+
+        normalizer = logsumexp(log_proposal_contrasative - log_prior_contrastive)
+        loss = -(proprosal_log_prob - normalizer)
+        if self.aux:
+            return loss, (
+                proprosal_log_prob,
+                log_proposal_contrasative,
+                log_prior_contrastive,
+            )
+        return loss
 
     def sample_proposal(self, key, proposal, n=None):
 
@@ -121,6 +139,12 @@ class ContrastiveLoss(eqx.Module):
             return sample_single(key)
 
         return vmap(sample_single)(jr.split(key, n))
+
+    @partial(vmap, in_axes=[None, 0, None, None])
+    def log_proposal_and_prior(self, latents, guide, predictive):
+        proposal_log_prob = log_density(guide, latents, obs=predictive)[0]
+        prior_log_prob = prior_log_density(self.model, latents, [self.obs_name])
+        return proposal_log_prob, prior_log_prob
 
     def log_sum_exp_normalizer(self, guide, latents, predictive):
         """Computes log sum(q(z|x)/p(z))."""

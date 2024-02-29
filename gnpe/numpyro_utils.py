@@ -15,7 +15,7 @@ def log_density(model, data, *args, **kwargs):
 def prior_log_density(
     model,
     data: dict,
-    observed_nodes: Iterable[str] = (),
+    observed_nodes: Iterable[str],
 ):
     """Given a model and data, evalutate the prior log probability."""
     # To skip sampling observed nodes we provide dummy samples.
