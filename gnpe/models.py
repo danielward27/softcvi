@@ -6,8 +6,7 @@ from flowjax.distributions import (
     AbstractDistribution,
 )
 from flowjax.experimental.numpyro import sample
-from jax import Array
-from jax.numpy import vectorize
+from jax import Array, vmap
 from numpyro.infer.reparam import TransformReparam
 
 
@@ -119,9 +118,12 @@ class LocScaleHierarchicalGuide(eqx.Module):
         with numpyro.plate("obs", obs.shape[0]):
             z = sample("z", self.z, condition=obs)
 
-        embed = vectorize(self.z_embedding_net, signature="(a)->(b)")(z).mean(0)
-        sample("loc_base", self.loc_base, condition=embed)
-        sample("scale_base", self.scale_base, condition=embed)
+        assert z.shape == (self.n_obs, self.z.shape[0])
+        z_embedding = vmap(self.z_embedding_net)(z).mean(0)
+
+        assert z_embedding.shape == (self.z_embedding_net.out_size,)
+        sample("loc_base", self.loc_base, condition=z_embedding)
+        sample("scale_base", self.scale_base, condition=z_embedding)
 
     def _argcheck(self, obs):
         if (s := obs.shape[-2]) != self.n_obs:

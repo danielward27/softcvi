@@ -3,11 +3,12 @@ from functools import partial
 
 import equinox as eqx
 import jax.random as jr
+from flowjax.wrappers import unwrap
 from jax import Array, vmap
 from jax.lax import stop_gradient
 from jax.scipy.special import logsumexp
 from numpyro import handlers
-from numpyro.infer import Predictive, Trace_ELBO
+from numpyro.infer import Trace_ELBO
 
 from gnpe.numpyro_utils import log_density, prior_log_density
 
@@ -49,14 +50,15 @@ class AmortizedMaximumLikelihood(eqx.Module):
         key,
     ):
         def single_sample_loss(key):
-            guide = eqx.combine(params, static)
-            prior_predictive = Predictive(self.model, num_samples=self.num_particles)
-            model_samp = prior_predictive(key)
-            predictive_samps = model_samp.pop(self.observed_name)
-            guide_log_prob, _ = log_density(guide, model_samp, obs=predictive_samps)
-            return -guide_log_prob / self.num_particles
+            guide = unwrap(eqx.combine(params, static))
+            model_trace = handlers.trace(handlers.seed(self.model, key)).get_trace()
+            obs = model_trace.pop(self.observed_name)["value"]
+            samples = {
+                k: v["value"] for k, v in model_trace.items() if v["type"] == "sample"
+            }
+            return -log_density(guide, samples, obs=obs)[0]
 
-        return vmap(single_sample_loss)(jr.split(key)).mean()
+        return vmap(single_sample_loss)(jr.split(key, self.num_particles)).mean()
 
 
 class ContrastiveLoss(eqx.Module):
@@ -98,7 +100,7 @@ class ContrastiveLoss(eqx.Module):
         static,
         key,
     ):
-        guide = eqx.combine(params, static)
+        guide = unwrap(eqx.combine(params, static))
         guide_detatched = eqx.combine(stop_gradient(params), static)
 
         contrastive_key, guide_key, predictive_key = jr.split(key, 3)
@@ -191,6 +193,6 @@ class NegativeEvidenceLowerBound(eqx.Module):
             key,
             {},
             self.model,
-            eqx.combine(params, static),
+            unwrap(eqx.combine(params, static)),
             obs=self.obs,
         )
