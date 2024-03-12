@@ -1,12 +1,13 @@
 from collections.abc import Callable
 
 import equinox as eqx
+import jax.numpy as jnp
 import numpyro
 from flowjax.distributions import (
     AbstractDistribution,
 )
 from flowjax.experimental.numpyro import sample
-from jax import Array, vmap
+from jax import Array
 from numpyro.infer.reparam import TransformReparam
 
 
@@ -52,6 +53,7 @@ class LocScaleHierarchicalModel(eqx.Module):
             self.reparam = {
                 "loc": TransformReparam(),
                 "scale": TransformReparam(),
+                "z": TransformReparam(),
             }
         else:
             self.reparam = reparam
@@ -87,7 +89,6 @@ class LocScaleHierarchicalGuide(eqx.Module):
     loc_base: AbstractDistribution
     scale_base: AbstractDistribution
     z: AbstractDistribution
-    z_embedding_net: Callable
     n_obs: int
 
     """Construct a guide for LocScaleHierarchicalModel.
@@ -115,15 +116,22 @@ class LocScaleHierarchicalGuide(eqx.Module):
         """
         self._argcheck(obs)
 
-        with numpyro.plate("obs", obs.shape[0]):
-            z = sample("z", self.z, condition=obs)
+        # Embed x get global, then
+        x_embedding = jnp.concatenate((obs.mean(-2), obs.std(axis=-2)))
+        assert x_embedding.ndim == 1
+        loc_base = sample("loc_base", self.loc_base, condition=x_embedding)
+        scale_base = sample("scale_base", self.scale_base, condition=x_embedding)
+
+        loc_base, scale_base = (
+            jnp.broadcast_to(a, (self.n_obs, a.shape[-1]))
+            for a in [loc_base, scale_base]
+        )
+        features = jnp.concatenate((obs, loc_base, scale_base), axis=-1)
+
+        with numpyro.plate("obs", obs.shape[-2]):
+            z = sample("z_base", self.z, condition=features)
 
         assert z.shape == (self.n_obs, self.z.shape[0])
-        z_embedding = vmap(self.z_embedding_net)(z).mean(0)
-
-        assert z_embedding.shape == (self.z_embedding_net.out_size,)
-        sample("loc_base", self.loc_base, condition=z_embedding)
-        sample("scale_base", self.scale_base, condition=z_embedding)
 
     def _argcheck(self, obs):
         if (s := obs.shape[-2]) != self.n_obs:

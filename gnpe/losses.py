@@ -22,24 +22,24 @@ class AmortizedMaximumLikelihood(eqx.Module):
 
     Args:
         model: The numpyro probabilistic model. This must allow passing
-        observed_name: The name of the observed node in the model
+        obs_name: The name of the observed node in the model
         num_particles: The number of particles to use in the estimation at each
             step. Defaults to 1.
     """
 
     model: Callable
-    observed_name: str
+    obs_name: str
     num_particles: int
 
     def __init__(
         self,
         model: Callable,
-        observed_name: str,
+        obs_name: str,
         num_particles: int = 1,
     ):
 
         self.model = model
-        self.observed_name = observed_name
+        self.obs_name = obs_name
         self.num_particles = num_particles
 
     @eqx.filter_jit
@@ -52,7 +52,7 @@ class AmortizedMaximumLikelihood(eqx.Module):
         def single_sample_loss(key):
             guide = unwrap(eqx.combine(params, static))
             model_trace = handlers.trace(handlers.seed(self.model, key)).get_trace()
-            obs = model_trace.pop(self.observed_name)["value"]
+            obs = model_trace.pop(self.obs_name)["value"]
             samples = {
                 k: v["value"] for k, v in model_trace.items() if v["type"] == "sample"
             }
@@ -122,11 +122,11 @@ class ContrastiveLoss(eqx.Module):
         normalizer = logsumexp(log_proposal_contrasative - log_prior_contrastive)
         loss = -(proprosal_log_prob - normalizer)
         if self.aux:
-            return loss, (
-                proprosal_log_prob,
-                log_proposal_contrasative,
-                log_prior_contrastive,
-            )
+            return loss, {
+                "log p(theta|x)": proprosal_log_prob,
+                "log p(theta|x) contrastive": log_proposal_contrasative,
+                "log p(theta) contrastive": log_prior_contrastive,
+            }
         return loss
 
     def sample_proposal(self, key, proposal, n=None):
