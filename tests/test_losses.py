@@ -6,7 +6,7 @@ from flowjax.distributions import AbstractDistribution, Normal
 from flowjax.experimental.numpyro import sample
 from flowjax.flows import masked_autoregressive_flow
 
-from gnpe.losses import AmortizedMaximumLikelihood, ContrastiveLoss
+from cnpe.losses import AmortizedMaximumLikelihood, ContrastiveLoss
 
 
 def model(obs=None):
@@ -21,7 +21,7 @@ class Guide(eqx.Module):
         sample("a", self.a_guide, condition=obs)
 
 
-@pytest.fixture
+@pytest.fixture()
 def guide():
     return Guide(
         masked_autoregressive_flow(
@@ -33,13 +33,11 @@ def guide():
 
 
 def test_maximum_likelihood_loss(guide):
-
     loss = AmortizedMaximumLikelihood(model, observed_name="b")
     loss(*eqx.partition(guide, eqx.is_inexact_array), key=jr.PRNGKey(0))
 
 
-def test_contrastive_loss(guide):
-
+def test_contrastive_loss():
     loss = ContrastiveLoss(
         model=model,
         obs=jnp.array(jnp.arange(3)),
@@ -48,4 +46,4 @@ def test_contrastive_loss(guide):
 
     loss(*eqx.partition(guide, eqx.is_inexact_array), key=jr.PRNGKey(0))
 
-    # TODO test in some way?
+    # TODO likely a more robust test we can add.

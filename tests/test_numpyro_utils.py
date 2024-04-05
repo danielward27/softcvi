@@ -5,7 +5,7 @@ import pytest
 from numpyro import handlers, sample
 from numpyro.distributions import Normal
 
-from gnpe.numpyro_utils import prior_log_density, trace_to_log_prob
+from cnpe.numpyro_utils import prior_log_density, trace_to_log_prob
 
 
 def model(obs=None):

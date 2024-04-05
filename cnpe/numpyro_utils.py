@@ -1,3 +1,5 @@
+"""Numpyro utility functions."""
+
 from collections.abc import Iterable
 from functools import partial
 
@@ -8,7 +10,7 @@ from numpyro.infer import util
 
 
 def log_density(model, data, *args, **kwargs):
-    """numpyro.infer.util.log_density, with (arguably) a better signature."""
+    """numpyro.infer.util.log_density, with (arguably) a nicer signature."""
     return util.log_density(model, args, kwargs, params=data)
 
 

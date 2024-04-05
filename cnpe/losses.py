@@ -1,5 +1,9 @@
+"""Numpyro compatible loss functions."""
+
+from abc import abstractmethod
 from collections.abc import Callable
 from functools import partial
+from typing import ClassVar
 
 import equinox as eqx
 import jax.random as jr
@@ -10,10 +14,20 @@ from jax.scipy.special import logsumexp
 from numpyro import handlers
 from numpyro.infer import Trace_ELBO
 
-from gnpe.numpyro_utils import log_density, prior_log_density
+from cnpe.numpyro_utils import log_density, prior_log_density, trace_to_log_prob
 
 
-class AmortizedMaximumLikelihood(eqx.Module):
+class AbstractLoss(eqx.Module):
+    """Abstract class representing a loss function."""
+
+    has_aux: eqx.AbstractVar[bool]
+
+    @abstractmethod
+    def __call__(self, params, static, key):
+        pass
+
+
+class AmortizedMaximumLikelihood(AbstractLoss):
     """Loss function for simple amortized maximum likelihood.
 
     Samples the joint distribution and fits p(latents|observed) in an amortized
@@ -30,6 +44,7 @@ class AmortizedMaximumLikelihood(eqx.Module):
     model: Callable
     obs_name: str
     num_particles: int
+    has_aux: ClassVar[bool] = False
 
     def __init__(
         self,
@@ -61,7 +76,7 @@ class AmortizedMaximumLikelihood(eqx.Module):
         return vmap(single_sample_loss)(jr.split(key, self.num_particles)).mean()
 
 
-class ContrastiveLoss(eqx.Module):
+class ContrastiveLoss(AbstractLoss):
     """Create the contrastive loss function.
 
     Args:
@@ -69,13 +84,18 @@ class ContrastiveLoss(eqx.Module):
         obs: An array of observations.
         obs_name: The name of the observed node.
         n_contrastive: The number of contrastive samples to use. Defaults to 20.
+        stop_grad_for_contrastive_sampling: Whether to apply stop_gradient to the
+            parameters used for contrastive sampling. Defaults to False.
+        aux: Whether to return the individual loss components as a dictionary of
+            auxiliary values. Defaults to False.
     """
 
     model: Callable
     obs: Array
-    n_contrastive: int
     obs_name: str
-    aux: bool
+    n_contrastive: int
+    stop_grad_for_contrastive_sampling: bool
+    has_aux: bool
 
     def __init__(
         self,
@@ -84,14 +104,16 @@ class ContrastiveLoss(eqx.Module):
         obs: Array,
         obs_name: str,
         n_contrastive: int = 20,
-        aux: bool = False,
+        stop_grad_for_contrastive_sampling: bool = False,
+        has_aux: bool = False,
     ):
 
         self.model = model
         self.obs = obs
-        self.n_contrastive = n_contrastive
         self.obs_name = obs_name
-        self.aux = aux
+        self.n_contrastive = n_contrastive
+        self.stop_grad_for_contrastive_sampling = stop_grad_for_contrastive_sampling
+        self.has_aux = has_aux
 
     @eqx.filter_jit
     def __call__(
@@ -104,38 +126,51 @@ class ContrastiveLoss(eqx.Module):
         guide_detatched = eqx.combine(stop_gradient(params), static)
 
         contrastive_key, guide_key, predictive_key = jr.split(key, 3)
-        proposal_samp = self.sample_proposal(guide_key, guide_detatched)
+        proposal_samp, proposal_log_prob_given_x_obs = self.sample_proposal(
+            guide_key,
+            guide_detatched,
+            log_prob=True,
+        )
         x_samp = self.sample_predictive(predictive_key, proposal_samp)
+
+        if self.stop_grad_for_contrastive_sampling:
+            contrastive_guide = guide_detatched
+        else:
+            contrastive_guide = guide
         contrastive_samp = self.sample_proposal(
             contrastive_key,
-            guide,
+            contrastive_guide,
             n=self.n_contrastive,
         )
-        proprosal_log_prob = log_density(guide, proposal_samp, obs=x_samp)[0]
+        log_prob_given_x = log_density(guide, proposal_samp, obs=x_samp)[0]
+        log_prob_prior = prior_log_density(self.model, proposal_samp, [self.obs_name])
 
-        log_proposal_contrasative, log_prior_contrastive = self.log_proposal_and_prior(
+        log_prob_contrasative, log_prob_prior_contrastive = self.log_proposal_and_prior(
             contrastive_samp,
             guide,
             x_samp,
         )
-
-        normalizer = logsumexp(log_proposal_contrasative - log_prior_contrastive)
-        loss = -(proprosal_log_prob - normalizer)
-        if self.aux:
-            return loss, {
-                "log p(theta|x)": proprosal_log_prob,
-                "log p(theta|x) contrastive": log_proposal_contrasative,
-                "log p(theta) contrastive": log_prior_contrastive,
-            }
+        normalizer = logsumexp(log_prob_contrasative - log_prob_prior_contrastive)
+        loss = -(
+            log_prob_given_x
+            - log_prob_prior
+            + proposal_log_prob_given_x_obs
+            - normalizer
+        )
+        if self.has_aux:
+            raise NotImplementedError()
         return loss
 
-    def sample_proposal(self, key, proposal, n=None):
+    def sample_proposal(self, key, proposal, n=None, *, log_prob: bool = False):
 
         def sample_single(key):
             trace = handlers.trace(
                 fn=handlers.seed(proposal, key),
             ).get_trace(obs=self.obs)
-            return {k: v["value"] for k, v in trace.items() if v["type"] == "sample"}
+            samples = {k: v["value"] for k, v in trace.items() if v["type"] == "sample"}
+            if not log_prob:
+                return samples
+            return samples, trace_to_log_prob(trace, reduce=True)
 
         if n is None:
             return sample_single(key)
@@ -170,7 +205,7 @@ class ContrastiveLoss(eqx.Module):
         return predictive[self.obs_name]["value"]
 
 
-class NegativeEvidenceLowerBound(eqx.Module):
+class NegativeEvidenceLowerBound(AbstractLoss):
     """The negative evidence lower bound (ELBO) loss function.
 
     Args:
@@ -182,6 +217,7 @@ class NegativeEvidenceLowerBound(eqx.Module):
     model: Callable
     obs: Array
     n_particals: int = 1
+    has_aux: ClassVar[bool] = False
 
     def __call__(
         self,
