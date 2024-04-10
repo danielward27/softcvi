@@ -5,6 +5,7 @@ from functools import partial
 
 import jax.numpy as jnp
 from numpyro import handlers
+from numpyro.distributions import ExpandedDistribution, TransformedDistribution
 from numpyro.distributions.util import is_identically_one
 from numpyro.infer import util
 
@@ -14,21 +15,46 @@ def log_density(model, data, *args, **kwargs):
     return util.log_density(model, args, kwargs, params=data)
 
 
+def trace_except_obs(model, observed_nodes: Iterable[str]):
+    # Provide dummy to obs to avoid sampling
+    data = {k: jnp.empty(()) for k in observed_nodes}
+    model = handlers.condition(model, data)
+    model = handlers.block(model, hide=observed_nodes)
+    return handlers.trace(model).get_trace()
+
+
+def trace_to_distribution_transforms(trace):
+    """Get the numpyro transforms from the transformed distributions in trace.
+
+    Note if TransformReparam is used for a distribution, then the transform will not be
+    extracted from the trace as the transform is instead treated as a deterministic
+    function.
+    """
+    transforms = {}
+    for k, site in trace.items():
+        dist = site["fn"]
+        if isinstance(dist, ExpandedDistribution):
+            dist = dist.base_dist
+        if isinstance(dist, TransformedDistribution):
+            transforms[k] = dist.transforms
+    return transforms
+
+
+def reparameterized_log_prob():
+    raise NotImplementedError()
+
+
 def prior_log_density(
     model,
     data: dict,
     observed_nodes: Iterable[str],
 ):
     """Given a model and data, evalutate the prior log probability."""
-    # To skip sampling observed nodes we provide dummy samples.
-    # We could use block, but that does not generally avoid sampling the observed node.
-    data = data | {name: jnp.empty(()) for name in observed_nodes}
     model = handlers.condition(model, data)
-    model_trace = handlers.trace(model).get_trace()
-
+    model_trace = trace_except_obs(model, observed_nodes)
     log_prob = jnp.zeros(())
     for site in model_trace.values():
-        if site["type"] == "sample" and site["name"] not in observed_nodes:
+        if site["type"] == "sample":
             log_prob += eval_site_log_prob(site).sum()
     return log_prob
 

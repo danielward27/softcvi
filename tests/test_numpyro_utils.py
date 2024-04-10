@@ -2,16 +2,21 @@ import jax.numpy as jnp
 import jax.random as jr
 import numpyro
 import pytest
-from numpyro import handlers, sample
-from numpyro.distributions import Normal
+from flowjax.distributions import Normal
+from flowjax.experimental.numpyro import sample
+from numpyro import handlers
 
-from cnpe.numpyro_utils import prior_log_density, trace_to_log_prob
+from cnpe.numpyro_utils import (
+    prior_log_density,
+    trace_to_distribution_transforms,
+    trace_to_log_prob,
+)
 
 
 def model(obs=None):
     with numpyro.plate("plate", 5):
-        x = sample("x", Normal(0, 1))
-        sample("y", Normal(x, 1), obs=obs)
+        x = sample("x", Normal())
+        sample("y", Normal(x), obs=obs)
 
 
 def test_prior_log_density():
@@ -33,3 +38,21 @@ def test_trace_to_log_prob():
     assert pytest.approx(trace["y"]["value"]) == obs
     assert pytest.approx(log_probs["x"]) == Normal().log_prob(trace["x"]["value"])
     assert pytest.approx(log_probs["y"]) == Normal().log_prob(obs - trace["x"]["value"])
+
+
+def test_trace_to_distribution_transforms():
+    data = {"x": jnp.arange(5)}
+    trace = handlers.trace(handlers.condition(model, data)).get_trace(obs=jnp.zeros(5))
+    transforms = trace_to_distribution_transforms(trace)
+    assert pytest.approx(transforms["x"][0](jnp.zeros(5))) == jnp.zeros(5)
+    assert pytest.approx(transforms["y"][0](jnp.zeros(5))) == data["x"]
+
+    # Ensuring nested plates does't lead to nested ExpandedDistributions
+    def nested_plate_model():
+        with numpyro.plate("plate1", 2):
+            with numpyro.plate("plate1", 3):
+                sample("x", Normal(0, 2))
+
+    trace = handlers.trace(handlers.condition(nested_plate_model, {"x": 1})).get_trace()
+    transforms = trace_to_distribution_transforms(trace)
+    assert transforms["x"][0](1) == 2
