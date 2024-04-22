@@ -14,15 +14,14 @@ def model(obs=None):
     sample("b", Normal(a), obs=obs)
 
 
-class Guide(eqx.Module):
-    a_guide: AbstractDistribution
-
-    def __call__(self, obs):
-        sample("a", self.a_guide, condition=obs)
-
-
 @pytest.fixture()
 def guide():
+    class Guide(eqx.Module):
+        a_guide: AbstractDistribution
+
+        def __call__(self, obs):
+            sample("a", self.a_guide, condition=obs)
+
     return Guide(
         masked_autoregressive_flow(
             key=jr.PRNGKey(0),

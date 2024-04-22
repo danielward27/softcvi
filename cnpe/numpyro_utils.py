@@ -4,10 +4,11 @@ from collections.abc import Iterable
 from functools import partial
 
 import jax.numpy as jnp
+from numpyro import distributions as ndist
 from numpyro import handlers
-from numpyro.distributions import ExpandedDistribution, TransformedDistribution
 from numpyro.distributions.util import is_identically_one
 from numpyro.infer import util
+from numpyro.infer.reparam import Reparam
 
 
 def log_density(model, data, *args, **kwargs):
@@ -16,6 +17,7 @@ def log_density(model, data, *args, **kwargs):
 
 
 def trace_except_obs(model, observed_nodes: Iterable[str]):
+    """Trace a model, excluding the observed nodes."""
     # Provide dummy to obs to avoid sampling
     data = {k: jnp.empty(()) for k in observed_nodes}
     model = handlers.condition(model, data)
@@ -33,15 +35,38 @@ def trace_to_distribution_transforms(trace):
     transforms = {}
     for k, site in trace.items():
         dist = site["fn"]
-        if isinstance(dist, ExpandedDistribution):
+
+        while isinstance(dist, ndist.ExpandedDistribution | ndist.Independent):
             dist = dist.base_dist
-        if isinstance(dist, TransformedDistribution):
+
+        if isinstance(dist, ndist.TransformedDistribution):
             transforms[k] = dist.transforms
+
     return transforms
 
 
-def reparameterized_log_prob():
-    raise NotImplementedError()
+class ApplyTransformReparam(Reparam):
+    """Apply a transform to reparameterize.
+
+    Note this is different to TransformReparam in numpyro, which will reparameterize by
+    avoiding applying a transformation in a transformed distribution. In contrast, this
+    reparameterizes by applying a transform (which will impact the underlying model).
+
+    Args:
+        transform: numpyro transform.
+    """
+
+    def __init__(
+        self,
+        transform: ndist.transforms.Transform,
+    ):
+        self.transform = transform
+
+    def __call__(self, name, fn, obs):
+        assert obs is None, "ApplyTransformReparam does not support observe statements"
+        fn, expand_shape, event_dim = self._unwrap(fn)
+        fn = ndist.TransformedDistribution(fn, self.transform)
+        return self._wrap(fn, expand_shape, event_dim), None
 
 
 def prior_log_density(
