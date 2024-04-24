@@ -8,12 +8,14 @@ from typing import ClassVar
 import equinox as eqx
 import jax.random as jr
 from flowjax.wrappers import unwrap
-from jax import Array, vmap
+from jax import vmap
 from jax.lax import stop_gradient
 from jax.scipy.special import logsumexp
+from jaxtyping import Array, PRNGKeyArray, PyTree
 from numpyro import handlers
 from numpyro.infer import Trace_ELBO
 
+from cnpe.models import AbstractNumpyroModel
 from cnpe.numpyro_utils import log_density, prior_log_density, trace_to_log_prob
 
 
@@ -23,7 +25,7 @@ class AbstractLoss(eqx.Module):
     has_aux: eqx.AbstractVar[bool]
 
     @abstractmethod
-    def __call__(self, params, static, key):
+    def __call__(self, params: PyTree, static: PyTree, key: PRNGKeyArray):
         pass
 
 
@@ -32,42 +34,43 @@ class AmortizedMaximumLikelihood(AbstractLoss):
 
     Samples the joint distribution and fits p(latents|observed) in an amortized
     manner by maximizing the probability of the latents over the joint samples.
-    The guide must accept a key word array argument "observations".
+    The guide must accept a key word array argument "obs".
 
     Args:
-        model: The numpyro probabilistic model. This must allow passing
-        obs_name: The name of the observed node in the model
+        model: The numpyro probabilistic model. This must allow passing obs.
         num_particles: The number of particles to use in the estimation at each
             step. Defaults to 1.
     """
 
-    model: Callable
-    obs_name: str
+    model: AbstractNumpyroModel
     num_particles: int
     has_aux: ClassVar[bool] = False
 
     def __init__(
         self,
         model: Callable,
-        obs_name: str,
         num_particles: int = 1,
     ):
 
         self.model = model
-        self.obs_name = obs_name
         self.num_particles = num_particles
 
     @eqx.filter_jit
     def __call__(
         self,
-        params,
-        static,
-        key,
+        params: PyTree,
+        static: PyTree,
+        key: PRNGKeyArray,
     ):
         def single_sample_loss(key):
             guide = unwrap(eqx.combine(params, static))
             model_trace = handlers.trace(handlers.seed(self.model, key)).get_trace()
-            obs = model_trace.pop(self.obs_name)["value"]
+
+            # TODO Switch to handlers.condition instead of passing obs?
+            if len(self.model.obs_names) > 1:
+                raise ValueError("Multiple observed sites not yet supported.")
+            obs = model_trace.pop(self.model.obs_names[0])["value"]
+
             samples = {
                 k: v["value"] for k, v in model_trace.items() if v["type"] == "sample"
             }
@@ -92,7 +95,6 @@ class ContrastiveLoss(AbstractLoss):
 
     model: Callable
     obs: Array
-    obs_name: str
     n_contrastive: int
     stop_grad_for_contrastive_sampling: bool
     has_aux: bool
@@ -102,7 +104,6 @@ class ContrastiveLoss(AbstractLoss):
         *,
         model: Callable,
         obs: Array,
-        obs_name: str,
         n_contrastive: int = 20,
         stop_grad_for_contrastive_sampling: bool = False,
         has_aux: bool = False,
@@ -110,7 +111,6 @@ class ContrastiveLoss(AbstractLoss):
 
         self.model = model
         self.obs = obs
-        self.obs_name = obs_name
         self.n_contrastive = n_contrastive
         self.stop_grad_for_contrastive_sampling = stop_grad_for_contrastive_sampling
         self.has_aux = has_aux
@@ -118,10 +118,14 @@ class ContrastiveLoss(AbstractLoss):
     @eqx.filter_jit
     def __call__(
         self,
-        params,
-        static,
-        key,
+        params: PyTree,
+        static: PyTree,
+        key: PRNGKeyArray,
     ):
+        # TODO Switch to handlers.condition instead of passing obs?
+        if len(self.model.obs_names) > 1:
+            raise ValueError("Multiple observed sites not yet supported.")
+
         guide = unwrap(eqx.combine(params, static))
         guide_detatched = eqx.combine(stop_gradient(params), static)
 
@@ -143,7 +147,11 @@ class ContrastiveLoss(AbstractLoss):
             n=self.n_contrastive,
         )
         log_prob_given_x = log_density(guide, proposal_samp, obs=x_samp)[0]
-        log_prob_prior = prior_log_density(self.model, proposal_samp, [self.obs_name])
+        log_prob_prior = prior_log_density(
+            model=self.model,
+            data=proposal_samp,
+            observed_nodes=self.model.obs_names,
+        )
 
         log_prob_contrasative, log_prob_prior_contrastive = self.log_proposal_and_prior(
             contrastive_samp,
@@ -180,7 +188,7 @@ class ContrastiveLoss(AbstractLoss):
     @partial(vmap, in_axes=[None, 0, None, None])
     def log_proposal_and_prior(self, latents, guide, predictive):
         proposal_log_prob = log_density(guide, latents, obs=predictive)[0]
-        prior_log_prob = prior_log_density(self.model, latents, [self.obs_name])
+        prior_log_prob = prior_log_density(self.model, latents, self.model.obs_names)
         return proposal_log_prob, prior_log_prob
 
     def log_sum_exp_normalizer(self, guide, latents, predictive):
@@ -189,7 +197,11 @@ class ContrastiveLoss(AbstractLoss):
         @vmap
         def log_proposal_to_prior_ratio(latents):
             proposal_log_prob = log_density(guide, latents, obs=predictive)[0]
-            prior_log_prob = prior_log_density(self.model, latents, [self.obs_name])
+            prior_log_prob = prior_log_density(
+                self.model,
+                latents,
+                self.model.obs_names,
+            )
             return proposal_log_prob - prior_log_prob
 
         return logsumexp(log_proposal_to_prior_ratio(latents))
@@ -202,7 +214,7 @@ class ContrastiveLoss(AbstractLoss):
                 key,
             ),
         ).get_trace()
-        return predictive[self.obs_name]["value"]
+        return predictive[self.model.obs_names[0]]["value"]
 
 
 class NegativeEvidenceLowerBound(AbstractLoss):
@@ -221,9 +233,9 @@ class NegativeEvidenceLowerBound(AbstractLoss):
 
     def __call__(
         self,
-        params,
-        static,
-        key,
+        params: PyTree,
+        static: PyTree,
+        key: PRNGKeyArray,
     ):
         return Trace_ELBO(self.n_particals).loss(
             key,

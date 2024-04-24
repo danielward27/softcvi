@@ -1,7 +1,6 @@
 """Modified from flowjax to allow aux."""
 
 from collections.abc import Callable
-from typing import Any
 
 import equinox as eqx
 import jax
@@ -9,12 +8,10 @@ import jax.numpy as jnp
 import jax.random as jr
 import optax
 from flowjax.wrappers import NonTrainable
-from jax import Array
+from jaxtyping import PRNGKeyArray, PyTree
 from tqdm import tqdm
 
 from cnpe.losses import AbstractLoss
-
-PyTree = Any
 
 
 @eqx.filter_jit
@@ -54,7 +51,7 @@ def step(
 
 
 def train(
-    key: Array,
+    key: PRNGKeyArray,
     guide: Callable,
     loss_fn: AbstractLoss,
     *,

@@ -7,16 +7,25 @@ from flowjax.experimental.numpyro import sample
 from flowjax.flows import masked_autoregressive_flow
 
 from cnpe.losses import AmortizedMaximumLikelihood, ContrastiveLoss
+from cnpe.models import AbstractNumpyroGuide, AbstractNumpyroModel
 
 
-def model(obs=None):
-    a = sample("a", Normal(jnp.zeros((3,))))
-    sample("b", Normal(a), obs=obs)
+@pytest.fixture
+def model():
+    class Model(AbstractNumpyroModel):
+        obs_names = ("b",)
+        reparam_names = ()
+
+        def call_without_reparam(self, obs=None):
+            a = sample("a", Normal(jnp.zeros((3,))))
+            sample("b", Normal(a), obs=obs)
+
+    return Model()
 
 
-@pytest.fixture()
+@pytest.fixture
 def guide():
-    class Guide(eqx.Module):
+    class Guide(AbstractNumpyroGuide):
         a_guide: AbstractDistribution
 
         def __call__(self, obs):
@@ -31,16 +40,15 @@ def guide():
     )
 
 
-def test_maximum_likelihood_loss(guide):
-    loss = AmortizedMaximumLikelihood(model, observed_name="b")
+def test_maximum_likelihood_loss(model, guide):
+    loss = AmortizedMaximumLikelihood(model)
     loss(*eqx.partition(guide, eqx.is_inexact_array), key=jr.PRNGKey(0))
 
 
-def test_contrastive_loss():
+def test_contrastive_loss(model, guide):
     loss = ContrastiveLoss(
         model=model,
         obs=jnp.array(jnp.arange(3)),
-        obs_name="b",
     )
 
     loss(*eqx.partition(guide, eqx.is_inexact_array), key=jr.PRNGKey(0))
