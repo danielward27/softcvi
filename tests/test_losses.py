@@ -17,8 +17,9 @@ def model():
         reparam_names = ()
 
         def call_without_reparam(self, obs=None):
+            obs = {} if obs is None else obs
             a = sample("a", Normal(jnp.zeros((3,))))
-            sample("b", Normal(a), obs=obs)
+            sample("b", Normal(a), obs=obs.get("b"))
 
     return Model()
 
@@ -29,7 +30,7 @@ def guide():
         a_guide: AbstractDistribution
 
         def __call__(self, obs):
-            sample("a", self.a_guide, condition=obs)
+            sample("a", self.a_guide, condition=obs["b"])
 
     return Guide(
         masked_autoregressive_flow(
@@ -48,7 +49,7 @@ def test_maximum_likelihood_loss(model, guide):
 def test_contrastive_loss(model, guide):
     loss = ContrastiveLoss(
         model=model,
-        obs=jnp.array(jnp.arange(3)),
+        obs={"b": jnp.array(jnp.arange(3))},
     )
 
     loss(*eqx.partition(guide, eqx.is_inexact_array), key=jr.PRNGKey(0))

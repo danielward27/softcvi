@@ -15,7 +15,7 @@ from jaxtyping import Array, PRNGKeyArray, PyTree
 from numpyro import handlers
 from numpyro.infer import Trace_ELBO
 
-from cnpe.models import AbstractNumpyroModel
+from cnpe.models import AbstractNumpyroGuide, AbstractNumpyroModel
 from cnpe.numpyro_utils import log_density, prior_log_density, trace_to_log_prob
 
 
@@ -25,7 +25,12 @@ class AbstractLoss(eqx.Module):
     has_aux: eqx.AbstractVar[bool]
 
     @abstractmethod
-    def __call__(self, params: PyTree, static: PyTree, key: PRNGKeyArray):
+    def __call__(
+        self,
+        params: AbstractNumpyroGuide,
+        static: AbstractNumpyroGuide,
+        key: PRNGKeyArray,
+    ):
         pass
 
 
@@ -58,23 +63,16 @@ class AmortizedMaximumLikelihood(AbstractLoss):
     @eqx.filter_jit
     def __call__(
         self,
-        params: PyTree,
-        static: PyTree,
+        params: AbstractNumpyroGuide,
+        static: AbstractNumpyroGuide,
         key: PRNGKeyArray,
     ):
         def single_sample_loss(key):
             guide = unwrap(eqx.combine(params, static))
-            model_trace = handlers.trace(handlers.seed(self.model, key)).get_trace()
-
-            # TODO Switch to handlers.condition instead of passing obs?
-            if len(self.model.obs_names) > 1:
-                raise ValueError("Multiple observed sites not yet supported.")
-            obs = model_trace.pop(self.model.obs_names[0])["value"]
-
-            samples = {
-                k: v["value"] for k, v in model_trace.items() if v["type"] == "sample"
-            }
-            return -log_density(guide, samples, obs=obs)[0]
+            trace = handlers.trace(handlers.seed(self.model, key)).get_trace()
+            latents = {k: v["value"] for k, v in trace.items() if v["type"] == "sample"}
+            obs = {name: latents.pop(name) for name in self.model.obs_names}
+            return -log_density(guide, latents, obs=obs)[0]
 
         return vmap(single_sample_loss)(jr.split(key, self.num_particles)).mean()
 
@@ -93,8 +91,8 @@ class ContrastiveLoss(AbstractLoss):
             auxiliary values. Defaults to False.
     """
 
-    model: Callable
-    obs: Array
+    model: AbstractNumpyroModel
+    obs: dict[str, Array]
     n_contrastive: int
     stop_grad_for_contrastive_sampling: bool
     has_aux: bool
@@ -103,7 +101,7 @@ class ContrastiveLoss(AbstractLoss):
         self,
         *,
         model: Callable,
-        obs: Array,
+        obs: dict[str, Array],
         n_contrastive: int = 20,
         stop_grad_for_contrastive_sampling: bool = False,
         has_aux: bool = False,
@@ -118,14 +116,10 @@ class ContrastiveLoss(AbstractLoss):
     @eqx.filter_jit
     def __call__(
         self,
-        params: PyTree,
-        static: PyTree,
+        params: AbstractNumpyroGuide,
+        static: AbstractNumpyroGuide,
         key: PRNGKeyArray,
     ):
-        # TODO Switch to handlers.condition instead of passing obs?
-        if len(self.model.obs_names) > 1:
-            raise ValueError("Multiple observed sites not yet supported.")
-
         guide = unwrap(eqx.combine(params, static))
         guide_detatched = eqx.combine(stop_gradient(params), static)
 
@@ -169,7 +163,14 @@ class ContrastiveLoss(AbstractLoss):
             raise NotImplementedError()
         return loss
 
-    def sample_proposal(self, key, proposal, n=None, *, log_prob: bool = False):
+    def sample_proposal(
+        self,
+        key: PRNGKeyArray,
+        proposal: AbstractNumpyroGuide,
+        n: int | None = None,
+        *,
+        log_prob: bool = False,
+    ):
 
         def sample_single(key):
             trace = handlers.trace(
@@ -208,13 +209,14 @@ class ContrastiveLoss(AbstractLoss):
 
     def sample_predictive(self, key, latents):
         """Sample the observed node from the model, given the latents."""
+        # TODO check all latents present?
         predictive = handlers.trace(
             handlers.seed(
                 handlers.condition(self.model, data=latents),
                 key,
             ),
         ).get_trace()
-        return predictive[self.model.obs_names[0]]["value"]
+        return {name: predictive[name]["value"] for name in self.model.obs_names}
 
 
 class NegativeEvidenceLowerBound(AbstractLoss):

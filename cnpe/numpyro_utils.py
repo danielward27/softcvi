@@ -14,6 +14,7 @@ from numpyro.infer import util
 from numpyro.ops.pytree import PytreeTrace
 
 
+# TODO this description I believe is incorrect, I assume it is the joint?
 def log_density(model, data, *args, **kwargs):
     """Compute log density of data under the model.
 

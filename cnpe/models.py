@@ -3,6 +3,7 @@
 from abc import abstractmethod
 
 import equinox as eqx
+from jaxtyping import Array
 from numpyro import handlers
 from numpyro.distributions.transforms import ComposeTransform
 from numpyro.infer import reparam
@@ -58,7 +59,7 @@ class AbstractNumpyroGuide(eqx.Module):
     """Abstract class used for numpyro guides."""
 
     @abstractmethod
-    def __call__(self):
+    def __call__(self, obs: dict[str, Array]):
         """Numpyro model over the latent variables.
 
         Note, these should have a "_base" postfix when transform reparam is used.
@@ -69,6 +70,8 @@ class AbstractNumpyroGuide(eqx.Module):
         self,
         latents: dict,
         model: AbstractNumpyroModel,
+        *args,
+        **kwargs,
     ):
         """Compute the log probability in the original space, inferred from model.
 
@@ -80,7 +83,7 @@ class AbstractNumpyroGuide(eqx.Module):
             latents: Latents from the original space (not the base space).
             model: model from which to infer the reparameterization used.
         """
-        transforms = model.get_reparam_transforms(latents)
+        transforms = model.get_reparam_transforms(latents, *args, **kwargs)
         log_det = 0
 
         base_samples = {}
@@ -93,4 +96,4 @@ class AbstractNumpyroGuide(eqx.Module):
             else:
                 base_samples[k] = latent
 
-        return log_density(self, base_samples)[0] - log_det
+        return log_density(self, base_samples, *args, **kwargs)[0] - log_det
