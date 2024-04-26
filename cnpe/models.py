@@ -46,7 +46,7 @@ class AbstractNumpyroModel(eqx.Module):
             **kwargs: Key word arguments for model.
         """
         model_trace = trace_except_obs(
-            handlers.condition(self.call_without_reparam, latents),
+            handlers.substitute(self.call_without_reparam, latents),
             self.obs_names,
             *args,
             **kwargs,

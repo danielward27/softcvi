@@ -144,7 +144,7 @@ class ContrastiveLoss(AbstractLoss):
         log_prob_prior = prior_log_density(
             model=self.model,
             data=proposal_samp,
-            observed_nodes=self.model.obs_names,
+            obs_nodes=self.model.obs_names,
         )
 
         log_prob_contrasative, log_prob_prior_contrastive = self.log_proposal_and_prior(
@@ -179,7 +179,7 @@ class ContrastiveLoss(AbstractLoss):
             samples = {k: v["value"] for k, v in trace.items() if v["type"] == "sample"}
             if not log_prob:
                 return samples
-            return samples, trace_to_log_prob(trace, reduce=True)
+            return samples, trace_to_log_prob(trace)
 
         if n is None:
             return sample_single(key)

@@ -11,6 +11,7 @@ from cnpe.numpyro_utils import (
     prior_log_density,
     trace_to_distribution_transforms,
     trace_to_log_prob,
+    validate_data_and_model_match,
 )
 
 
@@ -23,14 +24,19 @@ def model(obs=None):
 def test_prior_log_density():
     prior_samp = {"x": jnp.arange(5)}
     expected = Normal().log_prob(prior_samp["x"]).sum()
-    log_prob = prior_log_density(model, data=prior_samp, observed_nodes=["y"])
+    log_prob = prior_log_density(model, data=prior_samp, obs_nodes=["y"])
+    assert pytest.approx(expected) == log_prob
+
+    # Check conditioned site treated as observed even if not provided in observed_nodes
+    cond_model = handlers.condition(model, {"y": jnp.ones(5)})
+    log_prob = prior_log_density(cond_model, data=prior_samp, obs_nodes={})
     assert pytest.approx(expected) == log_prob
 
 
 def test_trace_to_log_prob():
     obs = jnp.arange(5)
     trace = handlers.trace(handlers.seed(model, jr.PRNGKey(0))).get_trace(obs=obs)
-    log_probs = trace_to_log_prob(trace)
+    log_probs = trace_to_log_prob(trace, reduce=False)
 
     assert log_probs["x"].shape == (5,)
     assert log_probs["y"].shape == (5,)
@@ -66,9 +72,26 @@ def test_trace_to_distribution_transforms():
 
 def test_get_sample_site_names():
     names = get_sample_site_names(model)
-    assert names["latent"] == ["x", "y"]
-    assert names["observed"] == []
+    assert names.observed == set()
+    assert names.latent == {"x", "y"}
 
     names = get_sample_site_names(model, obs=jnp.array(0))
-    assert names["observed"] == ["y"]
-    assert names["latent"] == ["x"]
+    assert names.observed == {"y"}
+    assert names.latent == {"x"}
+
+
+def test_validate_data_and_model_match():
+
+    assert (
+        validate_data_and_model_match(
+            data={"x": jnp.ones(5), "y": jnp.ones(5)},
+            model=model,
+        )
+        is None
+    )  # Doesn't raise
+
+    with pytest.raises(ValueError, match="not in model"):
+        validate_data_and_model_match({"z": jnp.ones(5), "x": jnp.ones(5)}, model)
+
+    with pytest.raises(ValueError, match="shape"):
+        validate_data_and_model_match({"x": jnp.ones(5), "y": jnp.ones(())}, model)
