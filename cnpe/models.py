@@ -12,6 +12,7 @@ from cnpe.numpyro_utils import (
     log_density,
     trace_except_obs,
     trace_to_distribution_transforms,
+    validate_data_and_model_match,
 )
 
 
@@ -19,12 +20,12 @@ class AbstractNumpyroModel(eqx.Module):
     """Abstract class used for numpyro models.
 
     Attributes:
-        obs_names: names for the observed nodes.
+        observed_names: names for the observed nodes.
         reparam_names: tuple of latent names to which TransformReparam is applied.
     """
 
-    obs_names: eqx.AbstractClassVar[tuple[str]]
-    reparam_names: eqx.AbstractVar[tuple[str]]
+    observed_names: eqx.AbstractClassVar[set[str]]
+    reparam_names: eqx.AbstractVar[set[str]]
 
     def __call__(self, *args, **kwargs):
         """The numpyro model, applying reparameterizations."""
@@ -40,6 +41,8 @@ class AbstractNumpyroModel(eqx.Module):
     def get_reparam_transforms(self, latents: dict, *args, **kwargs):
         """Infer the deterministic transforms applied under reparameterization.
 
+        Note this only applies for TransformReparam (not other deterministic sites).
+
         Args:
             latents: latent variables from the data space (not the base space).
             *args: Positional arguments for model.
@@ -47,7 +50,7 @@ class AbstractNumpyroModel(eqx.Module):
         """
         model_trace = trace_except_obs(
             handlers.substitute(self.call_without_reparam, latents),
-            self.obs_names,
+            self.observed_names,
             *args,
             **kwargs,
         )
@@ -83,6 +86,12 @@ class AbstractNumpyroGuide(eqx.Module):
             latents: Latents from the original space (not the base space).
             model: model from which to infer the reparameterization used.
         """
+        validate_data_and_model_match(
+            latents,
+            model.call_without_reparam,
+            *args,
+            **kwargs,
+        )
         transforms = model.get_reparam_transforms(latents, *args, **kwargs)
         log_det = 0
 

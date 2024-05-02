@@ -6,6 +6,7 @@ from functools import partial
 from typing import ClassVar
 
 import equinox as eqx
+import jax.numpy as jnp
 import jax.random as jr
 from flowjax.wrappers import unwrap
 from jax import vmap
@@ -71,7 +72,7 @@ class AmortizedMaximumLikelihood(AbstractLoss):
             guide = unwrap(eqx.combine(params, static))
             trace = handlers.trace(handlers.seed(self.model, key)).get_trace()
             latents = {k: v["value"] for k, v in trace.items() if v["type"] == "sample"}
-            obs = {name: latents.pop(name) for name in self.model.obs_names}
+            obs = {name: latents.pop(name) for name in self.model.observed_names}
             return -log_density(guide, latents, obs=obs)[0]
 
         return vmap(single_sample_loss)(jr.split(key, self.num_particles)).mean()
@@ -83,7 +84,7 @@ class ContrastiveLoss(AbstractLoss):
     Args:
         model: The numpyro probabilistic model.
         obs: An array of observations.
-        obs_name: The name of the observed node.
+        observed_name: The name of the observed node.
         n_contrastive: The number of contrastive samples to use. Defaults to 20.
         stop_grad_for_contrastive_sampling: Whether to apply stop_gradient to the
             parameters used for contrastive sampling. Defaults to False.
@@ -144,7 +145,7 @@ class ContrastiveLoss(AbstractLoss):
         log_prob_prior = prior_log_density(
             model=self.model,
             data=proposal_samp,
-            obs_nodes=self.model.obs_names,
+            observed_nodes=self.model.observed_names,
         )
 
         log_prob_contrasative, log_prob_prior_contrastive = self.log_proposal_and_prior(
@@ -152,7 +153,9 @@ class ContrastiveLoss(AbstractLoss):
             guide,
             x_samp,
         )
-        normalizer = logsumexp(log_prob_contrasative - log_prob_prior_contrastive)
+        normalizer = logsumexp(
+            log_prob_contrasative - log_prob_prior_contrastive,
+        ) - jnp.log(self.n_contrastive)
         loss = -(
             log_prob_given_x
             - log_prob_prior
@@ -189,7 +192,11 @@ class ContrastiveLoss(AbstractLoss):
     @partial(vmap, in_axes=[None, 0, None, None])
     def log_proposal_and_prior(self, latents, guide, predictive):
         proposal_log_prob = log_density(guide, latents, obs=predictive)[0]
-        prior_log_prob = prior_log_density(self.model, latents, self.model.obs_names)
+        prior_log_prob = prior_log_density(
+            self.model,
+            latents,
+            self.model.observed_names,
+        )
         return proposal_log_prob, prior_log_prob
 
     def log_sum_exp_normalizer(self, guide, latents, predictive):
@@ -201,7 +208,7 @@ class ContrastiveLoss(AbstractLoss):
             prior_log_prob = prior_log_density(
                 self.model,
                 latents,
-                self.model.obs_names,
+                self.model.observed_names,
             )
             return proposal_log_prob - prior_log_prob
 
@@ -216,7 +223,7 @@ class ContrastiveLoss(AbstractLoss):
                 key,
             ),
         ).get_trace()
-        return {name: predictive[name]["value"] for name in self.model.obs_names}
+        return {name: predictive[name]["value"] for name in self.model.observed_names}
 
 
 class NegativeEvidenceLowerBound(AbstractLoss):

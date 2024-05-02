@@ -109,11 +109,11 @@ def train(
 
     if loss_fn.has_aux:
         return eqx.combine(params, static), losses, auxiliaries
+    meta_data = {"losses": jnp.array(losses), "converged": _is_converged(losses)}
+    return eqx.combine(params, static), meta_data
 
-    return eqx.combine(params, static), losses
 
-
-def _is_converged(losses, window_size=200):
+def _is_converged(losses, window_size=300):
     # Compares median loss from indices [-2*n:-n] and [-n:] as a measure of convergence
     if len(losses) < 2 * window_size:
         return False

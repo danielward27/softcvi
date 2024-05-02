@@ -9,11 +9,11 @@ from flowjax.experimental.numpyro import sample
 from cnpe.models import AbstractNumpyroGuide, AbstractNumpyroModel
 
 
-@pytest.fixture
+@pytest.fixture()
 def model():
     class Model(AbstractNumpyroModel):
-        reparam_names = ("a", "b")
-        obs_names = "c"
+        reparam_names = {"a", "b"}
+        observed_names = {"c"}
 
         def call_without_reparam(self, obs=None):
             a = sample("a", Normal(1, 2))
@@ -23,7 +23,7 @@ def model():
     return Model()
 
 
-@pytest.fixture
+@pytest.fixture()
 def guide():
     class Guide(AbstractNumpyroGuide):
         a_base: Normal = Normal(3, 4)

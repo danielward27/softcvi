@@ -10,21 +10,20 @@ from cnpe.losses import AmortizedMaximumLikelihood, ContrastiveLoss
 from cnpe.models import AbstractNumpyroGuide, AbstractNumpyroModel
 
 
-@pytest.fixture
+@pytest.fixture()
 def model():
     class Model(AbstractNumpyroModel):
-        obs_names = ("b",)
-        reparam_names = ()
+        observed_names = {"b"}
+        reparam_names = set()
 
         def call_without_reparam(self, obs=None):
-            obs = {} if obs is None else obs
             a = sample("a", Normal(jnp.zeros((3,))))
-            sample("b", Normal(a), obs=obs.get("b"))
+            sample("b", Normal(a), obs=obs["b"] if obs is not None else None)
 
     return Model()
 
 
-@pytest.fixture
+@pytest.fixture()
 def guide():
     class Guide(AbstractNumpyroGuide):
         a_guide: AbstractDistribution

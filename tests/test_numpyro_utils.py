@@ -24,12 +24,12 @@ def model(obs=None):
 def test_prior_log_density():
     prior_samp = {"x": jnp.arange(5)}
     expected = Normal().log_prob(prior_samp["x"]).sum()
-    log_prob = prior_log_density(model, data=prior_samp, obs_nodes=["y"])
+    log_prob = prior_log_density(model, data=prior_samp, observed_nodes=["y"])
     assert pytest.approx(expected) == log_prob
 
     # Check conditioned site treated as observed even if not provided in observed_nodes
     cond_model = handlers.condition(model, {"y": jnp.ones(5)})
-    log_prob = prior_log_density(cond_model, data=prior_samp, obs_nodes={})
+    log_prob = prior_log_density(cond_model, data=prior_samp, observed_nodes={})
     assert pytest.approx(expected) == log_prob
 
 
@@ -74,10 +74,12 @@ def test_get_sample_site_names():
     names = get_sample_site_names(model)
     assert names.observed == set()
     assert names.latent == {"x", "y"}
+    assert names.all == {"x", "y"}
 
     names = get_sample_site_names(model, obs=jnp.array(0))
     assert names.observed == {"y"}
     assert names.latent == {"x"}
+    assert names.all == {"x", "y"}
 
 
 def test_validate_data_and_model_match():

@@ -1,10 +1,9 @@
 """Numpyro utility functions."""
 
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from functools import partial
 
-import jax.numpy as jnp
 import jax.random as jr
 from jax import ShapeDtypeStruct, eval_shape
 from jax.tree_util import Partial, tree_map
@@ -38,7 +37,7 @@ def log_density(model, data, *args, **kwargs):
 def prior_log_density(
     model,
     data: dict[str, Array],
-    obs_nodes: Iterable[str],
+    observed_nodes: Iterable[str],
     *args,
     **kwargs,
 ):
@@ -51,18 +50,18 @@ def prior_log_density(
     Args:
         model: Numpyro model.
         data: Dictionary of arrays of (unbatched) data.
-        obs_nodes: Names of observed variables. These only need to be provided if not
-            observed in the model trace.
+        observed_nodes: Names of observed variables. These only need to be provided if
+            not observed in the model trace.
     """
     names = get_sample_site_names(model, *args, **kwargs)
-    latent_names = names.latent - set(obs_nodes)
+    latent_names = names.latent - set(observed_nodes)
     if data.keys() != latent_names:
         raise ValueError(
             f"Data keys {data.keys()} does not match model latents {latent_names}.",
         )
     validate_data_and_model_match(data, model, *args, **kwargs)
     model = handlers.substitute(model, data)  # substitute to avoid converting to obs
-    model_trace = trace_except_obs(model, obs_nodes, *args, **kwargs)
+    model_trace = trace_except_obs(model, observed_nodes, *args, **kwargs)
     return trace_to_log_prob(model_trace)
 
 
@@ -99,7 +98,7 @@ def shape_only_trace(model: Callable, *args, **kwargs):
     )
 
 
-def get_sample_site_names(model, *args, **kwargs):
+def get_sample_site_names(model: Callable, *args, **kwargs):
     """Infer the names of the sample sites of a model given args and kwargs.
 
     Args:
@@ -112,14 +111,14 @@ def get_sample_site_names(model, *args, **kwargs):
     """
     trace = shape_only_trace(model, *args, **kwargs)
 
-    observed, latent = [], []
+    observed, latent = set(), set()
     for name, site in trace.items():
         if site["type"] != "sample":
             continue
         if site["is_observed"]:
-            observed.append(name)
+            observed.add(name)
         else:
-            latent.append(name)
+            latent.add(name)
 
     @dataclass
     class _Names:
@@ -128,26 +127,25 @@ def get_sample_site_names(model, *args, **kwargs):
 
         @property
         def all(self) -> set[str]:
-            return observed + latent
+            return self.observed | self.latent
 
     return _Names(set(observed), set(latent))
 
 
-def trace_except_obs(model, observed_nodes: Iterable[str], *args, **kwargs):
+def trace_except_obs(model: Callable, observed_nodes: Iterable[str], *args, **kwargs):
     """Trace a model, excluding the observed nodes.
 
     This assumes no nodes are decscendents of the observed nodes (often the case
     if the model describes the assumed data generating process).
     """
-    # Just do a shape only trace,
     dummy_obs = {k: ShapeDtypeStruct((), float) for k in observed_nodes}
-    model = handlers.condition(model, dummy_obs)
-    obs_names = get_sample_site_names(model).observed  # obs in original model or dummy
-    model = handlers.block(model, hide=obs_names)
+    model = handlers.condition(model, dummy_obs)  # To avoid sampling observed nodes
+    observed_names = get_sample_site_names(model).observed
+    model = handlers.block(model, hide=observed_names)
     return handlers.trace(model).get_trace(*args, **kwargs)
 
 
-def trace_to_distribution_transforms(trace):
+def trace_to_distribution_transforms(trace: dict):
     """Get the numpyro transforms any transformed distributions in trace.
 
     Note if TransformReparam is used for a distribution, then the transform will not be
@@ -169,7 +167,7 @@ def trace_to_distribution_transforms(trace):
     return transforms
 
 
-def eval_site_log_prob(site):
+def eval_site_log_prob(site: dict):
     """Evaluate the log probability of a site."""
     log_prob_fn = site["fn"].log_prob
 
@@ -184,7 +182,7 @@ def eval_site_log_prob(site):
     return log_prob
 
 
-def trace_to_log_prob(trace, *, reduce=True):
+def trace_to_log_prob(trace: dict, *, reduce: bool = True):
     """Computes dictionary of log probabilities, or a scalar value for a trace.
 
     Args:
@@ -221,8 +219,8 @@ def validate_data_and_model_match(
     """
     trace = shape_only_trace(model, *args, **kwargs)
     for name, samples in data.items():
-        if name not in trace:  # TODO Check with names function?
-            raise ValueError(f"Data with name {name} is not in model trace.")
+        if name not in trace or trace[name]["type"] != "sample":
+            raise ValueError(f"A sample site with name {name} is not in model trace.")
 
         trace_shape = trace[name]["value"].shape
 
