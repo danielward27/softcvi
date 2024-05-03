@@ -18,7 +18,7 @@ from cnpe.numpyro_utils import (
 def model(obs=None):
     with numpyro.plate("plate", 5):
         x = sample("x", numpyro.distributions.Normal())
-        sample("y", numpyro.distributions.Normal(x), obs=obs)
+    sample("y", numpyro.distributions.Normal(x), obs=obs)
 
 
 def test_prior_log_density():
@@ -31,6 +31,14 @@ def test_prior_log_density():
     cond_model = handlers.condition(model, {"y": jnp.ones(5)})
     log_prob = prior_log_density(cond_model, data=prior_samp, observed_nodes={})
     assert pytest.approx(expected) == log_prob
+
+    # Check errors if name in observed nodes in samples
+    prior_samp["y"] = jnp.ones(5)
+    with pytest.raises(
+        ValueError,
+        match="does not match model latents",
+    ):
+        prior_log_density(model, data=prior_samp, observed_nodes={"y"})
 
 
 def test_trace_to_log_prob():
