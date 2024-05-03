@@ -7,7 +7,7 @@ from functools import partial
 import jax.random as jr
 from jax import ShapeDtypeStruct, eval_shape
 from jax.tree_util import Partial, tree_map
-from jaxtyping import Array
+from jaxtyping import Array, Scalar
 from numpyro import distributions as ndist
 from numpyro import handlers
 from numpyro.distributions.util import is_identically_one
@@ -39,8 +39,9 @@ def prior_log_density(
     data: dict[str, Array],
     observed_nodes: Iterable[str],
     *args,
+    reduce: bool = True,
     **kwargs,
-):
+) -> Scalar | dict[str, Array]:
     """Given a model and data, evalutate the prior log probability.
 
     If the model contains observed sites in the trace, these are not included in the
@@ -52,6 +53,10 @@ def prior_log_density(
         data: Dictionary of arrays of (unbatched) data.
         observed_nodes: Names of observed variables. These only need to be provided if
             not observed in the model trace.
+        *args: positional arguments passed to the model.
+        reduce: Whether to reduce to probabilities to a scalar or return a dictionary
+            for the probabilities at each site.
+        **kwargs: kwargs passed to the model.
     """
     names = get_sample_site_names(model, *args, **kwargs)
     latent_names = names.latent - set(observed_nodes)
@@ -59,10 +64,15 @@ def prior_log_density(
         raise ValueError(
             f"Data keys {data.keys()} does not match model latents {latent_names}.",
         )
+
+    for k in observed_nodes:
+        if k in data:
+            raise ValueError(f"{k} passed in both data and observed nodes.")
+
     validate_data_and_model_match(data, model, *args, **kwargs)
     model = handlers.substitute(model, data)  # substitute to avoid converting to obs
     model_trace = trace_except_obs(model, observed_nodes, *args, **kwargs)
-    return trace_to_log_prob(model_trace)
+    return trace_to_log_prob(model_trace, reduce=reduce)
 
 
 def shape_only_trace(model: Callable, *args, **kwargs):

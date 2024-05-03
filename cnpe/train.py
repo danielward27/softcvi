@@ -3,7 +3,6 @@
 from collections.abc import Callable
 
 import equinox as eqx
-import jax
 import jax.numpy as jnp
 import jax.random as jr
 import optax
@@ -103,26 +102,6 @@ def train(
         losses.append(loss_val.item())
         keys.set_postfix({"loss": loss_val.item()})
 
-        if _is_converged(losses):
-            keys.set_postfix_str(f"{keys.postfix} (Convergence criteria reached.)")
-            break
-
     if loss_fn.has_aux:
-        return eqx.combine(params, static), losses, auxiliaries
-    meta_data = {"losses": jnp.array(losses), "converged": _is_converged(losses)}
-    return eqx.combine(params, static), meta_data
-
-
-def _is_converged(losses, window_size=300):
-    # Compares median loss from indices [-2*n:-n] and [-n:] as a measure of convergence
-    if len(losses) < 2 * window_size:
-        return False
-
-    losses = jnp.asarray(losses[-2 * window_size :])
-
-    @jax.jit
-    def _jit_is_converged(losses):
-        a, b = jnp.split(losses, 2)
-        return jnp.median(a) < jnp.median(b)
-
-    return _jit_is_converged(losses)
+        return eqx.combine(params, static), jnp.array(losses), auxiliaries
+    return eqx.combine(params, static), jnp.array(losses)

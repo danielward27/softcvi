@@ -9,9 +9,9 @@ from numpyro.distributions.transforms import ComposeTransform
 from numpyro.infer import reparam
 
 from cnpe.numpyro_utils import (
-    log_density,
     trace_except_obs,
     trace_to_distribution_transforms,
+    trace_to_log_prob,
     validate_data_and_model_match,
 )
 
@@ -74,6 +74,7 @@ class AbstractNumpyroGuide(eqx.Module):
         latents: dict,
         model: AbstractNumpyroModel,
         *args,
+        reduce: bool = True,
         **kwargs,
     ):
         """Compute the log probability in the original space, inferred from model.
@@ -84,7 +85,11 @@ class AbstractNumpyroGuide(eqx.Module):
 
         Args:
             latents: Latents from the original space (not the base space).
-            model: model from which to infer the reparameterization used.
+            model: Model from which to infer the reparameterization used.
+            *args: Positional arguments passed to the model and guide.
+            reduce: Whether to reduce the result to a scalar or return a dictionary
+                of log probabilities for each site.
+            **kwargs: Key word arguments passed to the model and guide.
         """
         validate_data_and_model_match(
             latents,
@@ -93,16 +98,29 @@ class AbstractNumpyroGuide(eqx.Module):
             **kwargs,
         )
         transforms = model.get_reparam_transforms(latents, *args, **kwargs)
-        log_det = 0
 
         base_samples = {}
+        log_dets = {}
         for k, latent in latents.items():
             if k in transforms:
                 transform = ComposeTransform(transforms[k])
                 base_val = transform.inv(latent)
-                log_det += transform.log_abs_det_jacobian(base_val, None).sum()
+                log_dets[k] = transform.log_abs_det_jacobian(base_val, None)
                 base_samples[f"{k}_base"] = base_val
             else:
                 base_samples[k] = latent
 
-        return log_density(self, base_samples, *args, **kwargs)[0] - log_det
+        trace = handlers.trace(handlers.condition(self, base_samples)).get_trace(
+            *args,
+            **kwargs,
+        )
+        log_probs = trace_to_log_prob(trace, reduce=False)
+
+        for k in transforms.keys():
+            log_probs[k] = log_probs[f"{k}_base"] - log_dets[k]
+            log_probs.pop(f"{k}_base")
+
+        if reduce:
+            return sum(v.sum() for v in log_probs.values())
+
+        return log_probs
