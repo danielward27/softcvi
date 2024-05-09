@@ -8,7 +8,6 @@ from numpyro import handlers
 
 from cnpe.numpyro_utils import (
     get_sample_site_names,
-    prior_log_density,
     trace_to_distribution_transforms,
     trace_to_log_prob,
     validate_data_and_model_match,
@@ -19,26 +18,6 @@ def model(obs=None):
     with numpyro.plate("plate", 5):
         x = sample("x", numpyro.distributions.Normal())
     sample("y", numpyro.distributions.Normal(x), obs=obs)
-
-
-def test_prior_log_density():
-    prior_samp = {"x": jnp.arange(5)}
-    expected = Normal().log_prob(prior_samp["x"]).sum()
-    log_prob = prior_log_density(model, data=prior_samp, observed_nodes=["y"])
-    assert pytest.approx(expected) == log_prob
-
-    # Check conditioned site treated as observed even if not provided in observed_nodes
-    cond_model = handlers.condition(model, {"y": jnp.ones(5)})
-    log_prob = prior_log_density(cond_model, data=prior_samp, observed_nodes={})
-    assert pytest.approx(expected) == log_prob
-
-    # Check errors if name in observed nodes in samples
-    prior_samp["y"] = jnp.ones(5)
-    with pytest.raises(
-        ValueError,
-        match="does not match model latents",
-    ):
-        prior_log_density(model, data=prior_samp, observed_nodes={"y"})
 
 
 def test_trace_to_log_prob():
@@ -99,6 +78,23 @@ def test_validate_data_and_model_match():
         )
         is None
     )  # Doesn't raise
+
+    # check allows missing sites by default
+    assert (
+        validate_data_and_model_match(
+            data={"x": jnp.ones(5)},
+            model=model,
+        )
+        is None
+    )  # Doesn't raise
+
+    # Check assert present works
+    with pytest.raises(ValueError, match="Expected y to be provided"):
+        validate_data_and_model_match(
+            data={"x": jnp.ones(5)},
+            model=model,
+            assert_present=["y"],
+        )
 
     with pytest.raises(ValueError, match="not in model"):
         validate_data_and_model_match({"z": jnp.ones(5), "x": jnp.ones(5)}, model)

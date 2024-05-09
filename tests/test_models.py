@@ -10,9 +10,9 @@ from numpyro import plate
 from cnpe.models import AbstractNumpyroGuide, AbstractNumpyroModel
 
 
-@pytest.fixture()
-def model():
+def simple_model_and_guide():
     class Model(AbstractNumpyroModel):
+        reparameterized: bool | None = None
         reparam_names = {"a", "b"}
         observed_names = {"c"}
 
@@ -21,11 +21,6 @@ def model():
             b = sample("b", Laplace(a, a))
             sample("c", Laplace(b, b), obs=obs)
 
-    return Model()
-
-
-@pytest.fixture()
-def guide():
     class Guide(AbstractNumpyroGuide):
         a_base: Normal = Normal(3, 4)
         b_base: Laplace = Laplace(3, 4)
@@ -34,23 +29,12 @@ def guide():
             sample("a_base", self.a_base)
             sample("b_base", self.b_base)
 
-    return Guide()
+    return Model(), Guide()
 
 
-def test_guide_log_prob_original_space(model, guide):
-    data = {"a": jnp.array(1), "b": jnp.array(2)}
-    a_log_prob = Transformed(guide.a_base, Affine(1, 2)).log_prob(data["a"])
-    b_log_prob = Transformed(guide.b_base, Affine(data["a"], data["a"])).log_prob(
-        data["b"],
-    )
-    log_prob = guide.log_prob_original_space(data, model)
-    expected = a_log_prob + b_log_prob
-    assert pytest.approx(expected) == log_prob
-
-
-@pytest.fixture()
-def plate_model():
+def plate_model_and_guide():
     class PlateModel(AbstractNumpyroModel):
+        reparameterized: bool | None = None
         reparam_names = {"scale", "theta"}
         observed_names = {"x"}
 
@@ -61,11 +45,6 @@ def plate_model():
 
             sample("x", Normal(b, scale))
 
-    return PlateModel()
-
-
-@pytest.fixture()
-def plate_guide():
     class PlateGuide(AbstractNumpyroGuide):
         scale_base: Laplace = Laplace(1)
         theta_base: Laplace = Laplace(1)
@@ -75,18 +54,82 @@ def plate_guide():
             with plate("dim", 2):
                 sample("theta_base", self.theta_base)
 
-    return PlateGuide()
+    return PlateModel(), PlateGuide()
 
 
-def test_guide_log_prob_original_space_plate(plate_model, plate_guide):
+def test_log_prob_original_space():
+    # Simple example
+    model, guide = simple_model_and_guide()
+    data = {"a": jnp.array(1), "b": jnp.array(2)}
+    a_log_prob = Transformed(guide.a_base, Affine(1, 2)).log_prob(data["a"])
+    b_log_prob = Transformed(guide.b_base, Affine(data["a"], data["a"])).log_prob(
+        data["b"],
+    )
+    log_prob = guide.log_prob_original_space(data, model)
+    expected = a_log_prob + b_log_prob
+    assert pytest.approx(expected) == log_prob
+
+    # Test example with plate
+    model, guide = plate_model_and_guide()
     data = {"scale": jnp.array(2), "theta": jnp.array([2, 3])}
 
     expected = [
-        Transformed(plate_guide.scale_base, Exp()).log_prob(data["scale"]),
-        Transformed(plate_guide.theta_base, Affine(0, data["scale"])).log_prob(
+        Transformed(guide.scale_base, Exp()).log_prob(data["scale"]),
+        Transformed(guide.theta_base, Affine(0, data["scale"])).log_prob(
             data["theta"],
         ),
     ]
     expected = sum(arr.sum() for arr in expected)
-    realized = plate_guide.log_prob_original_space(data, plate_model)
+    realized = guide.log_prob_original_space(data, model)
     assert pytest.approx(expected) == realized
+
+
+def test_prior_log_density():
+    model, _ = simple_model_and_guide()
+
+    # Test in original space
+    prior_samp = {"a": jnp.array(1), "b": jnp.array(2)}
+    expected = sum(
+        [
+            Normal(1, 2).log_prob(prior_samp["a"]),
+            Laplace(prior_samp["a"], prior_samp["a"]).log_prob(prior_samp["b"]),
+        ],
+    )
+    log_prob = model.reparam(set_val=False).prior_log_prob(prior_samp)
+    assert pytest.approx(expected) == log_prob
+
+    # Test in reparameterized space
+    prior_samp = {"a_base": jnp.array(1), "b_base": jnp.array(2)}
+
+    expected = sum(
+        [
+            Normal().log_prob(prior_samp["a_base"]),
+            Laplace().log_prob(prior_samp["b_base"]),
+        ],
+    )
+    log_prob = model.reparam().prior_log_prob(prior_samp)
+    assert pytest.approx(expected) == log_prob
+
+    model, _ = plate_model_and_guide()
+    # Test in original space
+    prior_samp = {"scale": jnp.array(2), "theta": jnp.array([3, 3])}
+
+    expected = sum(
+        [
+            LogNormal().log_prob(prior_samp["scale"]),
+            Normal(0, prior_samp["scale"]).log_prob(prior_samp["theta"]).sum(),
+        ],
+    )
+    log_prob = model.reparam(set_val=False).prior_log_prob(prior_samp)
+    assert pytest.approx(expected) == log_prob
+
+    prior_samp = {"scale_base": jnp.array(2), "theta_base": jnp.array([3, 3])}
+
+    expected = sum(
+        [
+            Normal().log_prob(prior_samp["scale_base"]),
+            Normal().log_prob(prior_samp["theta_base"]).sum(),
+        ],
+    )
+    log_prob = model.reparam().prior_log_prob(prior_samp)
+    assert pytest.approx(expected) == log_prob

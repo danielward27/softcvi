@@ -13,6 +13,7 @@ from cnpe.models import AbstractNumpyroGuide, AbstractNumpyroModel
 @pytest.fixture()
 def model():
     class Model(AbstractNumpyroModel):
+        reparameterized: bool = False
         observed_names = {"b"}
         reparam_names = set()
 

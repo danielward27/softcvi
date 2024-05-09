@@ -7,7 +7,7 @@ from functools import partial
 import jax.random as jr
 from jax import ShapeDtypeStruct, eval_shape
 from jax.tree_util import Partial, tree_map
-from jaxtyping import Array, Scalar
+from jaxtyping import Array
 from numpyro import distributions as ndist
 from numpyro import handlers
 from numpyro.distributions.util import is_identically_one
@@ -31,48 +31,6 @@ def log_density(model, data, *args, **kwargs):
 
     validate_data_and_model_match(data, model, *args, **kwargs)
     return util.log_density(model, args, kwargs, params=data)
-
-
-# TODO data first for more natural vmap?
-def prior_log_density(
-    model,
-    data: dict[str, Array],
-    observed_nodes: Iterable[str],
-    *args,
-    reduce: bool = True,
-    **kwargs,
-) -> Scalar | dict[str, Array]:
-    """Given a model and data, evalutate the prior log probability.
-
-    If the model contains observed sites in the trace, these are not included in the
-    prior density. Note however, we expect values to be explicitly passed e.g. for
-    sample sites set by handlers.substitute.
-
-    Args:
-        model: Numpyro model.
-        data: Dictionary of arrays of (unbatched) data.
-        observed_nodes: Names of observed variables. These only need to be provided if
-            not observed in the model trace.
-        *args: positional arguments passed to the model.
-        reduce: Whether to reduce to probabilities to a scalar or return a dictionary
-            for the probabilities at each site.
-        **kwargs: kwargs passed to the model.
-    """
-    names = get_sample_site_names(model, *args, **kwargs)
-    latent_names = names.latent - set(observed_nodes)
-    if data.keys() != latent_names:
-        raise ValueError(
-            f"Data keys {data.keys()} does not match model latents {latent_names}.",
-        )
-
-    for k in observed_nodes:
-        if k in data:
-            raise ValueError(f"{k} passed in both data and observed nodes.")
-
-    validate_data_and_model_match(data, model, *args, **kwargs)
-    model = handlers.substitute(model, data)  # substitute to avoid converting to obs
-    model_trace = trace_except_obs(model, observed_nodes, *args, **kwargs)
-    return trace_to_log_prob(model_trace, reduce=reduce)
 
 
 def shape_only_trace(model: Callable, *args, **kwargs):
@@ -213,6 +171,7 @@ def validate_data_and_model_match(
     data: dict[str, Array],
     model: Callable,
     *args,
+    assert_present: Iterable[str] | None = None,
     **kwargs,
 ):
     """Validate the data and model match (names and shapes).
@@ -225,8 +184,15 @@ def validate_data_and_model_match(
         data: The data.
         model: The model.
         *args: Args passed to model when tracing to infer shapes.
+        assert_present: An iterable of site names to check are provided in data.
+            Defaults to None.
         **kwargs: kwargs passed to model when tracing to infer shapes.
     """
+    if assert_present is not None:
+        for site in assert_present:
+            if site not in data:
+                raise ValueError(f"Expected {site} to be provided in data.")
+
     trace = shape_only_trace(model, *args, **kwargs)
     for name, samples in data.items():
         if name not in trace or trace[name]["type"] != "sample":

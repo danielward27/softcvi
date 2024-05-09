@@ -6,7 +6,6 @@ from functools import partial
 from typing import ClassVar
 
 import equinox as eqx
-import jax.numpy as jnp
 import jax.random as jr
 from flowjax.wrappers import unwrap
 from jax import vmap
@@ -17,7 +16,7 @@ from numpyro import handlers
 from numpyro.infer import Trace_ELBO
 
 from cnpe.models import AbstractNumpyroGuide, AbstractNumpyroModel
-from cnpe.numpyro_utils import log_density, prior_log_density, trace_to_log_prob
+from cnpe.numpyro_utils import log_density
 
 
 class AbstractLoss(eqx.Module):
@@ -96,7 +95,7 @@ class ContrastiveLoss(AbstractLoss):
     obs: dict[str, Array]
     n_contrastive: int
     stop_grad_for_contrastive_sampling: bool
-    has_aux: bool
+    has_aux: ClassVar[bool] = False
 
     def __init__(
         self,
@@ -105,14 +104,12 @@ class ContrastiveLoss(AbstractLoss):
         obs: dict[str, Array],
         n_contrastive: int = 20,
         stop_grad_for_contrastive_sampling: bool = False,
-        has_aux: bool = False,
     ):
 
         self.model = model
         self.obs = obs
         self.n_contrastive = n_contrastive
         self.stop_grad_for_contrastive_sampling = stop_grad_for_contrastive_sampling
-        self.has_aux = has_aux
 
     @eqx.filter_jit
     def __call__(
@@ -125,79 +122,30 @@ class ContrastiveLoss(AbstractLoss):
         guide_detatched = eqx.combine(stop_gradient(params), static)
 
         contrastive_key, guide_key, predictive_key = jr.split(key, 3)
-        proposal_samp, proposal_log_prob_given_x_obs = self.sample_proposal(
-            guide_key,
-            guide_detatched,
-            log_prob=True,
+        proposal_samp = guide_detatched.sample(guide_key, self.obs)
+        x_samp = self.model.sample_predictive(
+            predictive_key,
+            proposal_samp,
         )
-        x_samp = self.sample_predictive(predictive_key, proposal_samp)
 
         if self.stop_grad_for_contrastive_sampling:
             contrastive_guide = guide_detatched
         else:
             contrastive_guide = guide
-        contrastive_samp = self.sample_proposal(
-            contrastive_key,
-            contrastive_guide,
-            n=self.n_contrastive,
+        contrastive_samps = vmap(contrastive_guide.sample, in_axes=[0, None])(
+            jr.split(contrastive_key, self.n_contrastive),
+            self.obs,
         )
         log_prob_given_x = log_density(guide, proposal_samp, obs=x_samp)[0]
-        log_prob_prior = prior_log_density(
-            model=self.model,
-            data=proposal_samp,
-            observed_nodes=self.model.observed_names,
-        )
 
-        log_prob_contrasative, log_prob_prior_contrastive = self.log_proposal_and_prior(
-            contrastive_samp,
-            guide,
-            x_samp,
-        )
+        log_prob_contrasative = eqx.filter_vmap(
+            partial(log_density, guide, obs=x_samp),
+        )(contrastive_samps)[0]
+        log_prob_prior_contrastive = vmap(self.model.prior_log_prob)(contrastive_samps)
         normalizer = logsumexp(
             log_prob_contrasative - log_prob_prior_contrastive,
-        ) - jnp.log(self.n_contrastive)
-        loss = -(
-            log_prob_given_x
-            - log_prob_prior
-            + proposal_log_prob_given_x_obs
-            - normalizer
         )
-        if self.has_aux:
-            raise NotImplementedError()
-        return loss
-
-    def sample_proposal(
-        self,
-        key: PRNGKeyArray,
-        proposal: AbstractNumpyroGuide,
-        n: int | None = None,
-        *,
-        log_prob: bool = False,
-    ):
-
-        def sample_single(key):
-            trace = handlers.trace(
-                fn=handlers.seed(proposal, key),
-            ).get_trace(obs=self.obs)
-            samples = {k: v["value"] for k, v in trace.items() if v["type"] == "sample"}
-            if not log_prob:
-                return samples
-            return samples, trace_to_log_prob(trace)
-
-        if n is None:
-            return sample_single(key)
-
-        return vmap(sample_single)(jr.split(key, n))
-
-    @partial(vmap, in_axes=[None, 0, None, None])
-    def log_proposal_and_prior(self, latents, guide, predictive):
-        proposal_log_prob = log_density(guide, latents, obs=predictive)[0]
-        prior_log_prob = prior_log_density(
-            self.model,
-            latents,
-            self.model.observed_names,
-        )
-        return proposal_log_prob, prior_log_prob
+        return -(log_prob_given_x - normalizer)
 
     def log_sum_exp_normalizer(self, guide, latents, predictive):
         """Computes log sum(q(z|x)/p(z))."""
@@ -205,25 +153,10 @@ class ContrastiveLoss(AbstractLoss):
         @vmap
         def log_proposal_to_prior_ratio(latents):
             proposal_log_prob = log_density(guide, latents, obs=predictive)[0]
-            prior_log_prob = prior_log_density(
-                self.model,
-                latents,
-                self.model.observed_names,
-            )
+            prior_log_prob = self.model.prior_log_prob(latents)
             return proposal_log_prob - prior_log_prob
 
         return logsumexp(log_proposal_to_prior_ratio(latents))
-
-    def sample_predictive(self, key, latents):
-        """Sample the observed node from the model, given the latents."""
-        # TODO check all latents present?
-        predictive = handlers.trace(
-            handlers.seed(
-                handlers.condition(self.model, data=latents),
-                key,
-            ),
-        ).get_trace()
-        return {name: predictive[name]["value"] for name in self.model.observed_names}
 
 
 class NegativeEvidenceLowerBound(AbstractLoss):
