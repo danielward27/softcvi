@@ -61,7 +61,12 @@ class AbstractNumpyroModel(eqx.Module):
 
     def reparam(self, *, set_val: bool | None = True):
         """Returns a copy of the model, with the reparameterized flag changed."""
-        return eqx.tree_at(lambda model: model.reparameterized, self, set_val)
+        return eqx.tree_at(
+            where=lambda model: model.reparameterized,
+            pytree=self,
+            replace=set_val,
+            is_leaf=lambda leaf: leaf is None,
+        )
 
     def get_reparam_transforms(self, latents: dict[str, Array], *args, **kwargs):
         """Infer the deterministic transforms applied under reparameterization.

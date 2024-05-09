@@ -6,14 +6,18 @@ from flowjax.distributions import AbstractDistribution, Normal
 from flowjax.experimental.numpyro import sample
 from flowjax.flows import masked_autoregressive_flow
 
-from cnpe.losses import AmortizedMaximumLikelihood, ContrastiveLoss
+from cnpe.losses import (
+    AmortizedMaximumLikelihood,
+    ContrastiveLoss,
+    NegativeEvidenceLowerBound,
+)
 from cnpe.models import AbstractNumpyroGuide, AbstractNumpyroModel
 
 
 @pytest.fixture()
 def model():
     class Model(AbstractNumpyroModel):
-        reparameterized: bool = False
+        reparameterized: bool | None = None
         observed_names = {"b"}
         reparam_names = set()
 
@@ -41,17 +45,26 @@ def guide():
     )
 
 
+# TODO likely a more robust tests we can add - just check it runs
+
+
 def test_maximum_likelihood_loss(model, guide):
-    loss = AmortizedMaximumLikelihood(model)
+    loss = AmortizedMaximumLikelihood(model.reparam(set_val=True))
     loss(*eqx.partition(guide, eqx.is_inexact_array), key=jr.PRNGKey(0))
 
 
 def test_contrastive_loss(model, guide):
     loss = ContrastiveLoss(
-        model=model,
+        model=model.reparam(set_val=True),
         obs={"b": jnp.array(jnp.arange(3))},
     )
 
     loss(*eqx.partition(guide, eqx.is_inexact_array), key=jr.PRNGKey(0))
 
-    # TODO likely a more robust test we can add.
+
+def test_negative_elbo_loss(model, guide):
+    loss = NegativeEvidenceLowerBound(
+        model=model.reparam(set_val=True),
+        obs={"b": jnp.array(jnp.arange(3))},
+    )
+    loss(*eqx.partition(guide, eqx.is_inexact_array), key=jr.PRNGKey(0))

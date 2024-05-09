@@ -11,7 +11,7 @@ from flowjax.wrappers import unwrap
 from jax import vmap
 from jax.lax import stop_gradient
 from jax.scipy.special import logsumexp
-from jaxtyping import Array, PRNGKeyArray, PyTree
+from jaxtyping import Array, Float, PRNGKeyArray, PyTree, Scalar
 from numpyro import handlers
 from numpyro.infer import Trace_ELBO
 
@@ -30,7 +30,7 @@ class AbstractLoss(eqx.Module):
         params: AbstractNumpyroGuide,
         static: AbstractNumpyroGuide,
         key: PRNGKeyArray,
-    ):
+    ) -> Float[Scalar, ""]:
         pass
 
 
@@ -66,7 +66,7 @@ class AmortizedMaximumLikelihood(AbstractLoss):
         params: AbstractNumpyroGuide,
         static: AbstractNumpyroGuide,
         key: PRNGKeyArray,
-    ):
+    ) -> Float[Scalar, ""]:
         def single_sample_loss(key):
             guide = unwrap(eqx.combine(params, static))
             trace = handlers.trace(handlers.seed(self.model, key)).get_trace()
@@ -117,7 +117,7 @@ class ContrastiveLoss(AbstractLoss):
         params: AbstractNumpyroGuide,
         static: AbstractNumpyroGuide,
         key: PRNGKeyArray,
-    ):
+    ) -> Float[Scalar, ""]:
         guide = unwrap(eqx.combine(params, static))
         guide_detatched = eqx.combine(stop_gradient(params), static)
 
@@ -169,7 +169,7 @@ class NegativeEvidenceLowerBound(AbstractLoss):
     """
 
     model: Callable
-    obs: Array
+    obs: dict[str, Array]
     n_particals: int = 1
     has_aux: ClassVar[bool] = False
 
@@ -178,7 +178,7 @@ class NegativeEvidenceLowerBound(AbstractLoss):
         params: PyTree,
         static: PyTree,
         key: PRNGKeyArray,
-    ):
+    ) -> Float[Scalar, ""]:
         return Trace_ELBO(self.n_particals).loss(
             key,
             {},
@@ -186,3 +186,7 @@ class NegativeEvidenceLowerBound(AbstractLoss):
             unwrap(eqx.combine(params, static)),
             obs=self.obs,
         )
+
+
+# TODO If the mlp takes in all observations, then it should be replaced for VI (
+# e.g. replacing the MLP with just a bias module ignoring obs.)
