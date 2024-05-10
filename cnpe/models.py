@@ -89,6 +89,11 @@ class AbstractNumpyroModel(eqx.Module):
         transforms = trace_to_distribution_transforms(model_trace)
         return {k: t for k, t in transforms.items() if k in self.reparam_names}
 
+    def sample_prior(self, key: PRNGKeyArray):
+        model = handlers.seed(self, key)
+        trace = trace_except_obs(model, self.observed_names)
+        return {k: v["value"] for k, v in trace.items() if v["type"] == "sample"}
+
     def sample_predictive(
         self,
         key: PRNGKeyArray,
@@ -106,6 +111,14 @@ class AbstractNumpyroModel(eqx.Module):
             ),
         ).get_trace()
         return {name: predictive[name]["value"] for name in self.observed_names}
+
+    def sample_joint(self, key: PRNGKeyArray) -> tuple[dict, dict]:
+        """Sample the joint distribution, returning a tuple, (latents, observed)."""
+        trace = handlers.trace(handlers.seed(self, key)).get_trace()
+        return tuple(
+            {k: trace[k]["value"] for k in names}
+            for names in (self.latent_names, self.observed_names)
+        )
 
     @property
     def latent_names(self):
@@ -130,7 +143,7 @@ class AbstractNumpyroModel(eqx.Module):
         model = handlers.substitute(
             self,
             latents,
-        )  # substitute to avoid converting to obs
+        )
         model_trace = trace_except_obs(model, self.observed_names)
         return trace_to_log_prob(model_trace, reduce=reduce)
 

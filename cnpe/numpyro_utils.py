@@ -108,8 +108,7 @@ def trace_except_obs(model: Callable, observed_nodes: Iterable[str], *args, **kw
     """
     dummy_obs = {k: ShapeDtypeStruct((), float) for k in observed_nodes}
     model = handlers.condition(model, dummy_obs)  # To avoid sampling observed nodes
-    observed_names = get_sample_site_names(model).observed
-    model = handlers.block(model, hide=observed_names)
+    model = handlers.block(model, hide=observed_nodes)
     return handlers.trace(model).get_trace(*args, **kwargs)
 
 

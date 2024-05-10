@@ -12,7 +12,6 @@ from jax import vmap
 from jax.lax import stop_gradient
 from jax.scipy.special import logsumexp
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree, Scalar
-from numpyro import handlers
 from numpyro.infer import Trace_ELBO
 
 from cnpe.models import AbstractNumpyroGuide, AbstractNumpyroModel
@@ -69,9 +68,7 @@ class AmortizedMaximumLikelihood(AbstractLoss):
     ) -> Float[Scalar, ""]:
         def single_sample_loss(key):
             guide = unwrap(eqx.combine(params, static))
-            trace = handlers.trace(handlers.seed(self.model, key)).get_trace()
-            latents = {k: v["value"] for k, v in trace.items() if v["type"] == "sample"}
-            obs = {name: latents.pop(name) for name in self.model.observed_names}
+            latents, obs = self.model.sample_joint(key)
             return -log_density(guide, latents, obs=obs)[0]
 
         return vmap(single_sample_loss)(jr.split(key, self.num_particles)).mean()
@@ -123,10 +120,7 @@ class ContrastiveLoss(AbstractLoss):
 
         contrastive_key, guide_key, predictive_key = jr.split(key, 3)
         proposal_samp = guide_detatched.sample(guide_key, self.obs)
-        x_samp = self.model.sample_predictive(
-            predictive_key,
-            proposal_samp,
-        )
+        x_samp = self.model.sample_predictive(predictive_key, proposal_samp)
 
         if self.stop_grad_for_contrastive_sampling:
             contrastive_guide = guide_detatched
