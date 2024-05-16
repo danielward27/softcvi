@@ -1,6 +1,7 @@
 """Utility classes representing numpyro models and guides."""
 
 import jax.numpy as jnp
+import jax.random as jr
 import pytest
 from flowjax.bijections import Affine, Exp
 from flowjax.distributions import Laplace, LogNormal, Normal, Transformed
@@ -18,7 +19,7 @@ def simple_model_and_guide():
 
         def call_without_reparam(self, obs=None):
             a = sample("a", Normal(1, 2))
-            b = sample("b", Laplace(a, a))
+            b = sample("b", Laplace(a, jnp.exp(a)))
             sample("c", Laplace(b, b), obs=obs)
 
     class Guide(AbstractNumpyroGuide):
@@ -62,7 +63,10 @@ def test_log_prob_original_space():
     model, guide = simple_model_and_guide()
     data = {"a": jnp.array(1), "b": jnp.array(2)}
     a_log_prob = Transformed(guide.a_base, Affine(1, 2)).log_prob(data["a"])
-    b_log_prob = Transformed(guide.b_base, Affine(data["a"], data["a"])).log_prob(
+    b_log_prob = Transformed(
+        guide.b_base,
+        Affine(data["a"], jnp.exp(data["a"])),
+    ).log_prob(
         data["b"],
     )
     log_prob = guide.log_prob_original_space(data, model)
@@ -92,7 +96,9 @@ def test_prior_log_density():
     expected = sum(
         [
             Normal(1, 2).log_prob(prior_samp["a"]),
-            Laplace(prior_samp["a"], prior_samp["a"]).log_prob(prior_samp["b"]),
+            Laplace(prior_samp["a"], jnp.exp(prior_samp["a"])).log_prob(
+                prior_samp["b"],
+            ),
         ],
     )
     log_prob = model.reparam(set_val=False).prior_log_prob(prior_samp)
@@ -133,3 +139,15 @@ def test_prior_log_density():
     )
     log_prob = model.reparam().prior_log_prob(prior_samp)
     assert pytest.approx(expected) == log_prob
+
+
+def test_latents_to_original_space():
+    model, _ = simple_model_and_guide()
+    latents, _ = model.reparam(set_val=True).sample_joint(jr.PRNGKey(0))
+    a = latents["a_base"] * 2 + 1
+    expected = {
+        "a": pytest.approx(a),
+        "b": pytest.approx(latents["b_base"] * jnp.exp(a) + a),
+    }
+    original_space = model.latents_to_original_space(latents)
+    assert expected == original_space

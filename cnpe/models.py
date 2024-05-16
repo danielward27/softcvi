@@ -147,6 +147,32 @@ class AbstractNumpyroModel(eqx.Module):
         model_trace = trace_except_obs(model, self.observed_names)
         return trace_to_log_prob(model_trace, reduce=reduce)
 
+    def latents_to_original_space(
+        self,
+        latents: dict[str, Array],
+        *args,
+        **kwargs,
+    ) -> dict[str, Array]:
+        """Convert a set of latents from the reparameterized space to original space.
+
+        Args:
+            latents: The set of latents from the reparameterized space.
+            *args: Positional arguments passed when tracing.
+            **kwargs: Key word arguments passed when tracing.
+        """
+        # TODO Again we assume we can trace except obs reliably
+        latents = {k: v for k, v in latents.items()}  # Avoid mutating
+        model = self.reparam(set_val=True)
+        validate_data_and_model_match(latents, model, assert_present=model.latent_names)
+        model = handlers.condition(model, latents)
+        trace = trace_except_obs(model, self.observed_names, *args, **kwargs)
+
+        for name in self.reparam_names:
+            latents.pop(f"{name}_base")
+            latents[name] = trace[name]["value"]
+
+        return latents
+
 
 class AbstractNumpyroGuide(eqx.Module):
     """Abstract class used for numpyro guides."""
