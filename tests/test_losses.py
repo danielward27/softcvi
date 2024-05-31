@@ -57,6 +57,7 @@ def test_contrastive_loss(model, guide):
     loss = ContrastiveLoss(
         model=model.reparam(set_val=True),
         obs={"b": jnp.array(jnp.arange(3))},
+        n_contrastive=5,
     )
 
     loss(*eqx.partition(guide, eqx.is_inexact_array), key=jr.PRNGKey(0))

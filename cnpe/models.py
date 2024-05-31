@@ -1,4 +1,8 @@
-"""Abstract model and guide class containing reparameterization logic."""
+"""Abstract model and guide class containing reparameterization logic.
+
+Numpyro can be a bit clunky to work with, these classes provides some convenient methods
+for sampling, log density evaluation and reparameterization.
+"""
 
 from abc import abstractmethod
 
@@ -90,6 +94,13 @@ class AbstractNumpyroModel(eqx.Module):
         return {k: t for k, t in transforms.items() if k in self.reparam_names}
 
     def sample_prior(self, key: PRNGKeyArray):
+        """Generate a single sample from the prior.
+
+        To generate multiple samples, use e.g. jax.vmap over a set of keys.
+
+        Args:
+            key: Jax PRNGKey.
+        """
         model = handlers.seed(self, key)
         trace = trace_except_obs(model, self.observed_names)
         return {k: v["value"] for k, v in trace.items() if v["type"] == "sample"}
@@ -136,6 +147,7 @@ class AbstractNumpyroModel(eqx.Module):
         nodes in the DAG.
 
         Args:
+            latents: The set of latents to evaluate the prior density of.
             reduce: Whether to reduce the result to a scalar or return a dictionary
                 of log probabilities for each site.
         """

@@ -6,6 +6,7 @@ from functools import partial
 from typing import ClassVar
 
 import equinox as eqx
+import jax.numpy as jnp
 import jax.random as jr
 from flowjax.wrappers import unwrap
 from jax import vmap
@@ -13,6 +14,7 @@ from jax.lax import stop_gradient
 from jax.scipy.special import logsumexp
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree, Scalar
 from numpyro.infer import Trace_ELBO
+from optax.losses import sigmoid_binary_cross_entropy
 
 from cnpe.models import AbstractNumpyroGuide, AbstractNumpyroModel
 from cnpe.numpyro_utils import log_density
@@ -74,6 +76,61 @@ class AmortizedMaximumLikelihood(AbstractLoss):
         return vmap(single_sample_loss)(jr.split(key, self.num_particles)).mean()
 
 
+# TODO test consistency between two implementations
+class TwoClassContrastive(AbstractLoss):
+    """Two class contrastive loss function."""  # TODO update docs
+
+    model: AbstractNumpyroModel
+    obs: dict[str, Array]
+    num_particles: int
+    has_aux: ClassVar[bool] = False
+
+    def __init__(
+        self,
+        *,
+        model: Callable,
+        obs: dict[str, Array],
+        num_particles: int = 1,
+    ):
+
+        self.model = model
+        self.obs = obs
+        self.num_particles = num_particles
+
+    @eqx.filter_jit
+    def __call__(
+        self,
+        params: AbstractNumpyroGuide,
+        static: AbstractNumpyroGuide,
+        key: PRNGKeyArray,
+    ) -> Float[Scalar, ""]:
+
+        guide = unwrap(eqx.combine(params, static))
+
+        def loss_single(key):
+            proposal = eqx.combine(stop_gradient(params), static)  # TODO
+            contrastive_key, guide_key, predictive_key = jr.split(key, 3)
+            proposal_samp = proposal.sample(guide_key, self.obs)
+            x_samp = self.model.sample_predictive(predictive_key, proposal_samp)
+            contrastive_samp = proposal.sample(contrastive_key, obs=self.obs)
+
+            joint_ratio = self.log_guide_to_prior_ratio(proposal_samp, x_samp, guide)
+            contrastive_ratio = self.log_guide_to_prior_ratio(
+                contrastive_samp,
+                predictive=x_samp,
+                guide=guide,
+            )
+            label = jnp.array(0.9999)  # Perhaps improves robustness.
+            return sigmoid_binary_cross_entropy(joint_ratio - contrastive_ratio, label)
+
+        return eqx.filter_vmap(loss_single)(jr.split(key, self.num_particles)).mean()
+
+    def log_guide_to_prior_ratio(self, latents, predictive, guide):
+        proposal_log_prob = log_density(guide, latents, obs=predictive)[0]
+        prior_log_prob = self.model.prior_log_prob(latents)
+        return proposal_log_prob - prior_log_prob
+
+
 class ContrastiveLoss(AbstractLoss):
     """Create the contrastive loss function.
 
@@ -86,27 +143,30 @@ class ContrastiveLoss(AbstractLoss):
             parameters used for contrastive sampling. Defaults to False.
         aux: Whether to return the individual loss components as a dictionary of
             auxiliary values. Defaults to False.
-    """
+    """  # TODO update docs
 
     model: AbstractNumpyroModel
     obs: dict[str, Array]
     n_contrastive: int
-    stop_grad_for_contrastive_sampling: bool
+    reparameterized_sampling: bool
     has_aux: ClassVar[bool] = False
+    fixed_proposal: AbstractNumpyroGuide | None
 
     def __init__(
         self,
         *,
         model: Callable,
         obs: dict[str, Array],
-        n_contrastive: int = 20,
-        stop_grad_for_contrastive_sampling: bool = False,
+        n_contrastive: int,
+        reparameterized_sampling: bool = True,
+        fixed_proposal: AbstractNumpyroGuide | None = None,
     ):
 
         self.model = model
         self.obs = obs
         self.n_contrastive = n_contrastive
-        self.stop_grad_for_contrastive_sampling = stop_grad_for_contrastive_sampling
+        self.reparameterized_sampling = reparameterized_sampling
+        self.fixed_proposal = fixed_proposal
 
     @eqx.filter_jit
     def __call__(
@@ -116,41 +176,41 @@ class ContrastiveLoss(AbstractLoss):
         key: PRNGKeyArray,
     ) -> Float[Scalar, ""]:
         guide = unwrap(eqx.combine(params, static))
-        guide_detatched = eqx.combine(stop_gradient(params), static)
+
+        if self.fixed_proposal is not None:
+            proposal = self.fixed_proposal
+        elif not self.reparameterized_sampling:
+            proposal = eqx.combine(stop_gradient(params), static)
+        else:
+            proposal = guide
 
         contrastive_key, guide_key, predictive_key = jr.split(key, 3)
-        proposal_samp = guide_detatched.sample(guide_key, self.obs)
+        proposal_samp = proposal.sample(guide_key, self.obs)
         x_samp = self.model.sample_predictive(predictive_key, proposal_samp)
 
-        if self.stop_grad_for_contrastive_sampling:
-            contrastive_guide = guide_detatched
-        else:
-            contrastive_guide = guide
-        contrastive_samps = vmap(contrastive_guide.sample, in_axes=[0, None])(
-            jr.split(contrastive_key, self.n_contrastive),
-            self.obs,
-        )
-        log_prob_given_x = log_density(guide, proposal_samp, obs=x_samp)[0]
+        contrastive_samps = vmap(
+            partial(proposal.sample, obs=self.obs),
+        )(jr.split(contrastive_key, self.n_contrastive))
 
-        log_prob_contrasative = eqx.filter_vmap(
-            partial(log_density, guide, obs=x_samp),
-        )(contrastive_samps)[0]
-        log_prob_prior_contrastive = vmap(self.model.prior_log_prob)(contrastive_samps)
-        normalizer = logsumexp(
-            log_prob_contrasative - log_prob_prior_contrastive,
-        )
-        return -(log_prob_given_x - normalizer)
+        joint_ratio = self.log_guide_to_prior_ratio(proposal_samp, x_samp, guide)
 
-    def log_sum_exp_normalizer(self, guide, latents, predictive):
-        """Computes log sum(q(z|x)/p(z))."""
+        contrastive_ratios = vmap(
+            partial(
+                self.log_guide_to_prior_ratio,
+                predictive=x_samp,
+                guide=guide,
+            ),
+        )(contrastive_samps)
 
-        @vmap
-        def log_proposal_to_prior_ratio(latents):
-            proposal_log_prob = log_density(guide, latents, obs=predictive)[0]
-            prior_log_prob = self.model.prior_log_prob(latents)
-            return proposal_log_prob - prior_log_prob
+        # Include joint in contrastive
+        contrastive_ratios = jnp.append(contrastive_ratios, joint_ratio)
+        normalizer = logsumexp(contrastive_ratios)
+        return -(joint_ratio - normalizer)
 
-        return logsumexp(log_proposal_to_prior_ratio(latents))
+    def log_guide_to_prior_ratio(self, latents, predictive, guide):
+        proposal_log_prob = log_density(guide, latents, obs=predictive)[0]
+        prior_log_prob = self.model.prior_log_prob(latents)
+        return proposal_log_prob - prior_log_prob
 
 
 class NegativeEvidenceLowerBound(AbstractLoss):
