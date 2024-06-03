@@ -9,7 +9,7 @@ import equinox as eqx
 import jax.numpy as jnp
 import jax.random as jr
 from flowjax.wrappers import unwrap
-from jax import vmap
+from jax import nn, vmap
 from jax.lax import stop_gradient
 from jax.scipy.special import logsumexp
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree, Scalar
@@ -33,6 +33,53 @@ class AbstractLoss(eqx.Module):
         key: PRNGKeyArray,
     ) -> Float[Scalar, ""]:
         pass
+
+
+class ClassifierLoss(AbstractLoss):
+    """Two class contrastive loss function."""  # TODO update docs
+
+    model: AbstractNumpyroModel
+    obs: dict[str, Array]
+    num_pairs: int
+    has_aux: ClassVar[bool] = False
+
+    def __init__(
+        self,
+        *,
+        model: Callable,
+        obs: dict[str, Array],
+        num_pairs: int = 1,
+    ):
+
+        self.model = model
+        self.obs = obs
+        self.num_pairs = num_pairs
+
+    @eqx.filter_jit
+    def __call__(
+        self,
+        params: AbstractNumpyroGuide,
+        static: AbstractNumpyroGuide,
+        key: PRNGKeyArray,
+    ) -> Float[Scalar, ""]:
+        # TODO consider sample and log_prob combined
+        guide = unwrap(eqx.combine(params, static))
+        proposal = unwrap(eqx.combine(stop_gradient(params), static))
+
+        key, subkey = jr.split(key)
+        latents1 = proposal.sample(subkey, obs=self.obs)
+        lp1 = log_density(guide, latents1, obs=self.obs)[0]
+
+        key, subkey = jr.split(key)
+        latents2 = proposal.sample(subkey, obs=self.obs)
+        lp2 = log_density(guide, latents2, obs=self.obs)[0]
+
+        label = nn.sigmoid(
+            log_density(self.model, latents1, obs=self.obs)[0]
+            - log_density(self.model, latents2, obs=self.obs)[0],
+        )
+        logit = lp1 - lp2
+        return sigmoid_binary_cross_entropy(logit, label)
 
 
 class AmortizedMaximumLikelihood(AbstractLoss):
@@ -78,11 +125,16 @@ class AmortizedMaximumLikelihood(AbstractLoss):
 
 # TODO test consistency between two implementations
 class TwoClassContrastive(AbstractLoss):
-    """Two class contrastive loss function."""  # TODO update docs
+    """Two class contrastive loss function.
+
+    If num pairs==1, then the loss computation samples a pair of samples from
+    the joint distribution, and the contrastive set is made by flipping the latent
+    samples.
+    """  # TODO update docs
 
     model: AbstractNumpyroModel
     obs: dict[str, Array]
-    num_particles: int
+    num_pairs: int
     has_aux: ClassVar[bool] = False
 
     def __init__(
@@ -90,12 +142,12 @@ class TwoClassContrastive(AbstractLoss):
         *,
         model: Callable,
         obs: dict[str, Array],
-        num_particles: int = 1,
+        num_pairs: int = 1,
     ):
 
         self.model = model
         self.obs = obs
-        self.num_particles = num_particles
+        self.num_pairs = num_pairs
 
     @eqx.filter_jit
     def __call__(
@@ -109,21 +161,28 @@ class TwoClassContrastive(AbstractLoss):
 
         def loss_single(key):
             proposal = eqx.combine(stop_gradient(params), static)  # TODO
-            contrastive_key, guide_key, predictive_key = jr.split(key, 3)
-            proposal_samp = proposal.sample(guide_key, self.obs)
-            x_samp = self.model.sample_predictive(predictive_key, proposal_samp)
-            contrastive_samp = proposal.sample(contrastive_key, obs=self.obs)
 
-            joint_ratio = self.log_guide_to_prior_ratio(proposal_samp, x_samp, guide)
-            contrastive_ratio = self.log_guide_to_prior_ratio(
-                contrastive_samp,
-                predictive=x_samp,
-                guide=guide,
+            key, subkey = jr.split(key)
+            proposal_samps = vmap(partial(proposal.sample, obs=self.obs))(
+                jr.split(subkey),
             )
-            label = jnp.array(0.9999)  # Perhaps improves robustness.
-            return sigmoid_binary_cross_entropy(joint_ratio - contrastive_ratio, label)
+            contrastive_samps = {
+                k: jnp.flip(arr, axis=0) for k, arr in proposal_samps.items()
+            }
 
-        return eqx.filter_vmap(loss_single)(jr.split(key, self.num_particles)).mean()
+            key, subkey = jr.split(key)
+            x_samps = vmap(self.model.sample_predictive)(
+                jr.split(subkey),
+                proposal_samps,
+            )
+
+            ratio_fn = vmap(self.log_guide_to_prior_ratio, in_axes=[0, 0, None])
+            joint_ratio = ratio_fn(proposal_samps, x_samps, guide)
+            contrastive_ratio = ratio_fn(contrastive_samps, x_samps, guide)
+            labels = jnp.ones(2) - 1e-5  # TODO smoothing perhaps improves robustness.
+            return sigmoid_binary_cross_entropy(joint_ratio - contrastive_ratio, labels)
+
+        return eqx.filter_vmap(loss_single)(jr.split(key, self.num_pairs)).mean()
 
     def log_guide_to_prior_ratio(self, latents, predictive, guide):
         proposal_log_prob = log_density(guide, latents, obs=predictive)[0]

@@ -159,6 +159,19 @@ class AbstractNumpyroModel(eqx.Module):
         model_trace = trace_except_obs(model, self.observed_names)
         return trace_to_log_prob(model_trace, reduce=reduce)
 
+    def log_likelihood(
+        self,
+        latents: dict[str, Array],
+        obs: dict[str, Array],
+        *,
+        reduce: bool = True,
+    ):
+        validate_data_and_model_match(latents, self, assert_present=self.latent_names)
+        validate_data_and_model_match(obs, self, assert_present=self.observed_names)
+        trace = handlers.trace(handlers.substitute(self, latents)).get_trace(obs=obs)
+        obs_trace = {k: v for k, v in trace.items() if k in self.observed_names}
+        return trace_to_log_prob(obs_trace, reduce=reduce)
+
     def latents_to_original_space(
         self,
         latents: dict[str, Array],
