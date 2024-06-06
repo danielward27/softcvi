@@ -1,2 +1,3 @@
-## SoftCE: contrastive estimation of posteriors
+# SoftCE
+## Contrastive estimation of posteriors with self-generated soft labels
 TODO
