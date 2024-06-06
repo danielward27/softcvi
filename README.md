@@ -1,2 +1,3 @@
-## Contrastive Neural Posterior estimation
-Contrastive neural posterior estimation for arbitrary probabilistic models.
+# SoftCE
+## Contrastive estimation of posteriors with self-generated soft labels
+TODO

@@ -1,18 +1,21 @@
 """Abstract model and guide class containing reparameterization logic.
 
 Numpyro can be a bit clunky to work with, these classes provides some convenient methods
-for sampling, log density evaluation and reparameterization.
+for sampling, log density evaluation and reparameterization. In general, all methods
+should work in the single sample case, and require explicit vectorization otherwise,
+for example using ``equinox.filter_vmap`` or ``jax.vmap``.
 """
 
 from abc import abstractmethod
+from collections.abc import Callable, Iterable
 
 import equinox as eqx
+from jax import ShapeDtypeStruct, tree_util
 from jaxtyping import Array, PRNGKeyArray
 from numpyro import handlers
 from numpyro.distributions.transforms import ComposeTransform
 from numpyro.infer import reparam
-
-from cnpe.numpyro_utils import (
+from softce.numpyro_utils import (
     get_sample_site_names,
     trace_except_obs,
     trace_to_distribution_transforms,
@@ -23,7 +26,33 @@ from cnpe.numpyro_utils import (
 # TODO avoid *args, **kwargs?
 
 
-class AbstractNumpyroModel(eqx.Module):
+class AbstractModelOrGuide(eqx.Module):
+    """Abstract class representing shared model and guide components."""
+
+    @abstractmethod
+    def __call__(self, *args, **kwargs):
+        pass
+
+    @property
+    def site_names(self) -> set:
+        return get_sample_site_names(self).all
+
+    def sample(self, key: PRNGKeyArray) -> dict[str, Array]:
+        """Sample the joint distribution, returning a tuple, (latents, observed)."""
+        trace = handlers.trace(handlers.seed(self, key)).get_trace()
+        return {k: v["value"] for k, v in trace.items() if v["type"] == "sample"}
+
+    def log_prob(self, data: dict[str, Array], *, reduce: bool = True):
+        """The joint probability under the model.
+
+        Data should include all nodes (latents and observed).
+        """
+        validate_data_and_model_match(data, self, assert_present=self.site_names)
+        trace = handlers.trace(handlers.substitute(self, data)).get_trace()
+        return trace_to_log_prob(trace, reduce=reduce)
+
+
+class AbstractModel(AbstractModelOrGuide):
     """Abstract class used for numpyro models.
 
     The reparameterized flag changes whether the original, or reparameterized model
@@ -37,8 +66,8 @@ class AbstractNumpyroModel(eqx.Module):
             explicitly set before the model is called.
     """
 
-    observed_names: eqx.AbstractClassVar[set[str]]
-    reparam_names: eqx.AbstractVar[set[str]]
+    observed_names: eqx.AbstractVar[set[str] | frozenset[str]]
+    reparam_names: eqx.AbstractVar[set[str] | frozenset[str]]
     reparameterized: eqx.AbstractVar[bool | None]
 
     @abstractmethod
@@ -62,6 +91,10 @@ class AbstractNumpyroModel(eqx.Module):
                 self.call_without_reparam(*args, **kwargs)
         else:
             self.call_without_reparam(*args, **kwargs)
+
+    @property
+    def latent_names(self):
+        return self.site_names - self.observed_names
 
     def reparam(self, *, set_val: bool | None = True):
         """Returns a copy of the model, with the reparameterized flag changed."""
@@ -93,24 +126,12 @@ class AbstractNumpyroModel(eqx.Module):
         transforms = trace_to_distribution_transforms(model_trace)
         return {k: t for k, t in transforms.items() if k in self.reparam_names}
 
-    def sample_prior(self, key: PRNGKeyArray):
-        """Generate a single sample from the prior.
-
-        To generate multiple samples, use e.g. jax.vmap over a set of keys.
-
-        Args:
-            key: Jax PRNGKey.
-        """
-        model = handlers.seed(self, key)
-        trace = trace_except_obs(model, self.observed_names)
-        return {k: v["value"] for k, v in trace.items() if v["type"] == "sample"}
-
     def sample_predictive(
         self,
         key: PRNGKeyArray,
         latents: dict[str, Array],
     ):
-        """Sample a single sample from the predictive distribution.
+        """Sample a single sample from the predictive/likelihood distribution.
 
         To generate mutiple samples, use e.g. jax.vmap over a set of keys.
         """
@@ -122,42 +143,6 @@ class AbstractNumpyroModel(eqx.Module):
             ),
         ).get_trace()
         return {name: predictive[name]["value"] for name in self.observed_names}
-
-    def sample_joint(self, key: PRNGKeyArray) -> tuple[dict, dict]:
-        """Sample the joint distribution, returning a tuple, (latents, observed)."""
-        trace = handlers.trace(handlers.seed(self, key)).get_trace()
-        return tuple(
-            {k: trace[k]["value"] for k in names}
-            for names in (self.latent_names, self.observed_names)
-        )
-
-    @property
-    def latent_names(self):
-        return get_sample_site_names(self).all - self.observed_names
-
-    def prior_log_prob(
-        self,
-        latents: dict[str, Array],
-        *,
-        reduce: bool = True,
-    ):
-        """Compute the prior log probability under the model.
-
-        Note, this assumes there are no latents that are children of the observed
-        nodes in the DAG.
-
-        Args:
-            latents: The set of latents to evaluate the prior density of.
-            reduce: Whether to reduce the result to a scalar or return a dictionary
-                of log probabilities for each site.
-        """
-        validate_data_and_model_match(latents, self, assert_present=self.latent_names)
-        model = handlers.substitute(
-            self,
-            latents,
-        )
-        model_trace = trace_except_obs(model, self.observed_names)
-        return trace_to_log_prob(model_trace, reduce=reduce)
 
     def log_likelihood(
         self,
@@ -198,8 +183,43 @@ class AbstractNumpyroModel(eqx.Module):
 
         return latents
 
+    @property
+    def prior(self):
+        dummy_obs = {k: ShapeDtypeStruct((), float) for k in self.observed_names}
+        model = handlers.condition(self, dummy_obs)  # To avoid sampling observed nodes
+        return NumpyroModelToModel(
+            handlers.block(model, hide=self.observed_names),
+            observed_names=frozenset({}),
+            reparam_names=self.reparam_names,
+            reparameterized=self.reparameterized,
+        )
 
-class AbstractNumpyroGuide(eqx.Module):
+
+class NumpyroModelToModel(AbstractModel):
+    # Wrapper to wrap a standard numpyro model to a numpyro guide
+    model: Callable
+    observed_names: frozenset[str]
+    reparam_names: frozenset[str]
+    reparameterized: bool | None
+
+    def __init__(
+        self,
+        model: Callable,
+        observed_names: Iterable,
+        reparam_names: Iterable,
+        reparameterized: bool | None = None,
+    ):
+
+        self.model = model
+        self.observed_names = frozenset(observed_names)
+        self.reparam_names = frozenset(reparam_names)
+        self.reparameterized = reparameterized
+
+    def call_without_reparam(self, *args, **kwargs):
+        return self.model(*args, **kwargs)
+
+
+class AbstractGuide(AbstractModelOrGuide):
     """Abstract class used for numpyro guides."""
 
     @abstractmethod
@@ -213,7 +233,7 @@ class AbstractNumpyroGuide(eqx.Module):
     def log_prob_original_space(
         self,
         latents: dict,
-        model: AbstractNumpyroModel,
+        model: AbstractModel,
         *args,
         reduce: bool = True,
         **kwargs,
@@ -251,10 +271,7 @@ class AbstractNumpyroGuide(eqx.Module):
             else:
                 base_samples[k] = latent
 
-        trace = handlers.trace(handlers.condition(self, base_samples)).get_trace(
-            *args,
-            **kwargs,
-        )
+        trace = handlers.trace(handlers.condition(self, base_samples)).get_trace()
         log_probs = trace_to_log_prob(trace, reduce=False)
 
         for k in transforms.keys():
@@ -270,7 +287,6 @@ class AbstractNumpyroGuide(eqx.Module):
     def sample(
         self,
         key: PRNGKeyArray,
-        obs: dict[str, Array],
         *,
         log_prob: bool = False,
         reduce: bool = True,
@@ -279,9 +295,7 @@ class AbstractNumpyroGuide(eqx.Module):
 
         To draw multiple samples, vectorize (jax.vmap) over a set of keys.
         """
-        trace = handlers.trace(
-            fn=handlers.seed(self, key),
-        ).get_trace(obs=obs)
+        trace = handlers.trace(fn=handlers.seed(self, key)).get_trace()
         samples = {k: v["value"] for k, v in trace.items() if v["type"] == "sample"}
         if not log_prob:
             return samples

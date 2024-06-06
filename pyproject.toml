@@ -1,8 +1,8 @@
 [project]
 authors = [{ name = "Daniel Ward", email = "danielward27@outlook.com" }]
-dependencies = ["flowjax", "equinox", "tqdm", "optax"]
-description = "Generalized neural posterior estimation implementation."
-name = "cnpe"
+dependencies = ["flowjax", "equinox", "tqdm", "optax", "numpyro"]
+description = "Contrastive learning for posterior estimation."
+name = "softce"
 readme = "README.md"
 requires-python = ">=3.10"
 version = "0.0.0"
@@ -13,7 +13,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
-addopts = "--jaxtyping-packages=cnpe,beartype.beartype(conf=beartype.BeartypeConf(strategy=beartype.BeartypeStrategy.On))"
+addopts = "--jaxtyping-packages=softce,beartype.beartype(conf=beartype.BeartypeConf(strategy=beartype.BeartypeStrategy.On))"
 
 
 [tool.ruff]
@@ -32,4 +32,4 @@ convention = "google"
 "__init__.py" = ["D"]
 
 [tool.setuptools]
-packages = ["cnpe"]
+packages = ["softce"]

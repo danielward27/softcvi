@@ -5,8 +5,7 @@ import pytest
 from flowjax.distributions import Normal
 from flowjax.experimental.numpyro import sample
 from numpyro import handlers
-
-from cnpe.numpyro_utils import (
+from softce.numpyro_utils import (
     get_sample_site_names,
     trace_to_distribution_transforms,
     trace_to_log_prob,
