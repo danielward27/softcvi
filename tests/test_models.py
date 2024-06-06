@@ -7,12 +7,11 @@ from flowjax.bijections import Affine, Exp
 from flowjax.distributions import Laplace, LogNormal, Normal, Transformed
 from flowjax.experimental.numpyro import sample
 from numpyro import plate
-
-from cnpe.models import AbstractNumpyroGuide, AbstractNumpyroModel
+from softce.models import AbstractGuide, AbstractModel
 
 
 def simple_model_and_guide():
-    class Model(AbstractNumpyroModel):
+    class Model(AbstractModel):
         reparameterized: bool | None = None
         reparam_names = {"a", "b"}
         observed_names = {"c"}
@@ -22,7 +21,7 @@ def simple_model_and_guide():
             b = sample("b", Laplace(a, jnp.exp(a)))
             sample("c", Laplace(b, b), obs=obs)
 
-    class Guide(AbstractNumpyroGuide):
+    class Guide(AbstractGuide):
         a_base: Normal = Normal(3, 4)
         b_base: Laplace = Laplace(3, 4)
 
@@ -34,7 +33,7 @@ def simple_model_and_guide():
 
 
 def plate_model_and_guide():
-    class PlateModel(AbstractNumpyroModel):
+    class PlateModel(AbstractModel):
         reparameterized: bool | None = None
         reparam_names = {"scale", "theta"}
         observed_names = {"x"}
@@ -46,7 +45,7 @@ def plate_model_and_guide():
 
             sample("x", Normal(b, scale))
 
-    class PlateGuide(AbstractNumpyroGuide):
+    class PlateGuide(AbstractGuide):
         scale_base: Laplace = Laplace(1)
         theta_base: Laplace = Laplace(1)
 
@@ -101,7 +100,7 @@ def test_prior_log_density():
             ),
         ],
     )
-    log_prob = model.reparam(set_val=False).prior_log_prob(prior_samp)
+    log_prob = model.reparam(set_val=False).prior.log_prob(prior_samp)
     assert pytest.approx(expected) == log_prob
 
     # Test in reparameterized space
@@ -113,7 +112,7 @@ def test_prior_log_density():
             Laplace().log_prob(prior_samp["b_base"]),
         ],
     )
-    log_prob = model.reparam().prior_log_prob(prior_samp)
+    log_prob = model.reparam().prior.log_prob(prior_samp)
     assert pytest.approx(expected) == log_prob
 
     model, _ = plate_model_and_guide()
@@ -126,7 +125,7 @@ def test_prior_log_density():
             Normal(0, prior_samp["scale"]).log_prob(prior_samp["theta"]).sum(),
         ],
     )
-    log_prob = model.reparam(set_val=False).prior_log_prob(prior_samp)
+    log_prob = model.reparam(set_val=False).prior.log_prob(prior_samp)
     assert pytest.approx(expected) == log_prob
 
     prior_samp = {"scale_base": jnp.array(2), "theta_base": jnp.array([3, 3])}
@@ -137,17 +136,13 @@ def test_prior_log_density():
             Normal().log_prob(prior_samp["theta_base"]).sum(),
         ],
     )
-    log_prob = model.reparam().prior_log_prob(prior_samp)
+    log_prob = model.reparam().prior.log_prob(prior_samp)
     assert pytest.approx(expected) == log_prob
 
 
 def test_latents_to_original_space():
     model, _ = simple_model_and_guide()
-    latents, _ = model.reparam(set_val=True).sample_joint(jr.PRNGKey(0))
-    a = latents["a_base"] * 2 + 1
-    expected = {
-        "a": pytest.approx(a),
-        "b": pytest.approx(latents["b_base"] * jnp.exp(a) + a),
-    }
-    original_space = model.latents_to_original_space(latents)
-    assert expected == original_space
+    latents = model.reparam(set_val=True).prior.sample(jr.PRNGKey(0))
+    original_space_1 = model.reparam(set_val=False).prior.sample(jr.PRNGKey(0))
+    original_space_2 = model.latents_to_original_space(latents)
+    assert original_space_1 == original_space_2

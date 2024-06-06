@@ -8,9 +8,8 @@ import jax.random as jr
 import optax
 from flowjax.wrappers import NonTrainable
 from jaxtyping import PRNGKeyArray, PyTree
+from softce.losses import AbstractLoss
 from tqdm import tqdm
-
-from cnpe.losses import AbstractLoss
 
 
 @eqx.filter_jit

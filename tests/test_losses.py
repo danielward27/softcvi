@@ -4,78 +4,51 @@ import jax.random as jr
 import pytest
 from flowjax.distributions import AbstractDistribution, Normal
 from flowjax.experimental.numpyro import sample
-from flowjax.flows import masked_autoregressive_flow
-
-from cnpe.losses import (
-    AmortizedMaximumLikelihood,
+from softce.losses import (
     ClassifierLoss,
-    ContrastiveLoss,
     NegativeEvidenceLowerBound,
+    SoftContrastiveEstimationLoss,
 )
-from cnpe.models import AbstractNumpyroGuide, AbstractNumpyroModel
+from softce.models import AbstractGuide, AbstractModel
 
 
-@pytest.fixture()
-def model():
-    class Model(AbstractNumpyroModel):
-        reparameterized: bool | None = None
-        observed_names = {"b"}
-        reparam_names = set()
+class Model(AbstractModel):
+    reparameterized: bool | None = None
+    observed_names = {"b"}
+    reparam_names = set()
 
-        def call_without_reparam(self, obs=None):
-            a = sample("a", Normal(jnp.zeros((3,))))
-            sample("b", Normal(a), obs=obs["b"] if obs is not None else None)
-
-    return Model()
+    def call_without_reparam(self, obs=None):
+        a = sample("a", Normal(jnp.zeros((3,))))
+        sample("b", Normal(a), obs=obs["b"] if obs is not None else None)
 
 
-@pytest.fixture()
-def guide():
-    class Guide(AbstractNumpyroGuide):
-        a_guide: AbstractDistribution
+class Guide(AbstractGuide):
+    a_guide = Normal(jnp.ones(3))
 
-        def __call__(self, obs):
-            sample("a", self.a_guide, condition=obs["b"])
-
-    return Guide(
-        masked_autoregressive_flow(
-            key=jr.PRNGKey(0),
-            base_dist=Normal(jnp.zeros((3,))),
-            cond_dim=3,
-        ),
-    )
+    def __call__(self):
+        sample("a", Normal(jnp.ones(3)))
 
 
-# TODO likely a more robust tests we can add - just check it runs
-
-
-def test_maximum_likelihood_loss(model, guide):
-    loss = AmortizedMaximumLikelihood(model.reparam(set_val=True))
-    loss(*eqx.partition(guide, eqx.is_inexact_array), key=jr.PRNGKey(0))
-
-
-def test_contrastive_loss(model, guide):
-    loss = ContrastiveLoss(
-        model=model.reparam(set_val=True),
+test_cases = [
+    NegativeEvidenceLowerBound(
+        model=Model().reparam(set_val=True),
         obs={"b": jnp.array(jnp.arange(3))},
-        n_contrastive=5,
-    )
-
-    loss(*eqx.partition(guide, eqx.is_inexact_array), key=jr.PRNGKey(0))
-
-
-def test_negative_elbo_loss(model, guide):
-    loss = NegativeEvidenceLowerBound(
-        model=model.reparam(set_val=True),
+    ),
+    ClassifierLoss(
+        model=Model().reparam(set_val=True),
         obs={"b": jnp.array(jnp.arange(3))},
-    )
-    loss(*eqx.partition(guide, eqx.is_inexact_array), key=jr.PRNGKey(0))
-
-
-def test_maybe_nonsense_loss(model, guide):
-    loss = ClassifierLoss(
-        model=model.reparam(set_val=True),
+        num_pairs=1,
+    ),
+    SoftContrastiveEstimationLoss(
+        model=Model().reparam(set_val=True),
         obs={"b": jnp.array(jnp.arange(3))},
-    )
+        n_particles=2,
+    ),
+]
 
-    loss(*eqx.partition(guide, eqx.is_inexact_array), key=jr.PRNGKey(0))
+
+@pytest.mark.parametrize("loss", test_cases)
+def test_losses_run(loss):
+    guide = Guide()
+    loss_val = loss(*eqx.partition(guide, eqx.is_inexact_array), key=jr.PRNGKey(0))
+    assert loss_val.shape == ()
