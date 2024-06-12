@@ -4,11 +4,8 @@ import jax.random as jr
 import pytest
 from flowjax.distributions import AbstractDistribution, Normal
 from flowjax.experimental.numpyro import sample
-from softce.losses import (
-    ClassifierLoss,
-    NegativeEvidenceLowerBound,
-    SoftContrastiveEstimationLoss,
-)
+
+from softce import losses
 from softce.models import AbstractGuide, AbstractModel
 
 
@@ -30,16 +27,18 @@ class Guide(AbstractGuide):
 
 
 test_cases = [
-    NegativeEvidenceLowerBound(
+    losses.EvidenceLowerBoundLoss(
         model=Model().reparam(set_val=True),
         obs={"b": jnp.array(jnp.arange(3))},
+        n_particles=2,
     ),
-    ClassifierLoss(
+    losses.RenyiLoss(
+        alpha=0,
         model=Model().reparam(set_val=True),
         obs={"b": jnp.array(jnp.arange(3))},
-        num_pairs=1,
+        n_particles=2,
     ),
-    SoftContrastiveEstimationLoss(
+    losses.SoftContrastiveEstimationLoss(
         model=Model().reparam(set_val=True),
         obs={"b": jnp.array(jnp.arange(3))},
         n_particles=2,

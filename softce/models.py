@@ -1,36 +1,39 @@
 """Abstract model and guide class containing reparameterization logic.
 
-Numpyro can be a bit clunky to work with, these classes provides some convenient methods
-for sampling, log density evaluation and reparameterization. In general, all methods
-should work in the single sample case, and require explicit vectorization otherwise,
-for example using ``equinox.filter_vmap`` or ``jax.vmap``.
+Numpyro handlers can be a bit clunky to work with, these classes provides some
+convenient methods for sampling, log density evaluation and reparameterization.
+In general, all methods should work in the single sample case, and require explicit
+vectorization otherwise, for example using ``equinox.filter_vmap`` or ``jax.vmap``.
+
+In general, we currently assume that the only argument/key word argument that can be
+passed to a model obs (the observations), and a guide takes no arguments in its call
+method.
+
 """
 
 from abc import abstractmethod
 from collections.abc import Callable, Iterable
 
 import equinox as eqx
-from jax import ShapeDtypeStruct, tree_util
+from jax import ShapeDtypeStruct
 from jaxtyping import Array, PRNGKeyArray
 from numpyro import handlers
 from numpyro.distributions.transforms import ComposeTransform
 from numpyro.infer import reparam
+
 from softce.numpyro_utils import (
     get_sample_site_names,
-    trace_except_obs,
     trace_to_distribution_transforms,
     trace_to_log_prob,
     validate_data_and_model_match,
 )
-
-# TODO avoid *args, **kwargs?
 
 
 class AbstractModelOrGuide(eqx.Module):
     """Abstract class representing shared model and guide components."""
 
     @abstractmethod
-    def __call__(self, *args, **kwargs):
+    def __call__(self, obs: dict[str, Array] | None = None):
         pass
 
     @property
@@ -55,15 +58,14 @@ class AbstractModelOrGuide(eqx.Module):
 class AbstractModel(AbstractModelOrGuide):
     """Abstract class used for numpyro models.
 
-    The reparameterized flag changes whether the original, or reparameterized model
-    is used.
-
     Attributes:
-        observed_names: names for the observed nodes.
-        reparam_names: tuple of latent names to which TransformReparam is applied.
+        observed_names: Names for the observed nodes.
+        reparam_names:  Names of latents to which TransformReparam is applied,
+            if the reparameterized flag is set to True.
         reparameterized: A flag denoting whether to use the reparameterized model, or
-            the model on the original space. None is used to represent that it must be
-            explicitly set before the model is called.
+            the model on the original space. We set this to None on intialization,
+            meaning it must be explicitly set for methods that may refer to either
+            the reparameterized or original model.
     """
 
     observed_names: eqx.AbstractVar[set[str] | frozenset[str]]
@@ -71,7 +73,7 @@ class AbstractModel(AbstractModelOrGuide):
     reparameterized: eqx.AbstractVar[bool | None]
 
     @abstractmethod
-    def call_without_reparam(self, *args, **kwargs):
+    def call_without_reparam(self, obs: dict[str, Array] | None = None):
         """An implentation of the numpyro model, without applying reparameterization.
 
         Generally, do not directly use this method, instead calling the class directly,
@@ -79,7 +81,7 @@ class AbstractModel(AbstractModelOrGuide):
         """
         pass
 
-    def __call__(self, *args, **kwargs):
+    def __call__(self, obs: dict[str, Array] | None = None):
         """The numpyro model, applying reparameterizations."""
         if self.reparameterized is None:
             raise ValueError(
@@ -88,9 +90,9 @@ class AbstractModel(AbstractModelOrGuide):
         if self.reparameterized:
             config = {name: reparam.TransformReparam() for name in self.reparam_names}
             with handlers.reparam(config=config):
-                self.call_without_reparam(*args, **kwargs)
+                self.call_without_reparam(obs=obs)
         else:
-            self.call_without_reparam(*args, **kwargs)
+            self.call_without_reparam(obs=obs)
 
     @property
     def latent_names(self):
@@ -105,24 +107,25 @@ class AbstractModel(AbstractModelOrGuide):
             is_leaf=lambda leaf: leaf is None,
         )
 
-    def get_reparam_transforms(self, latents: dict[str, Array], *args, **kwargs):
+    def get_reparam_transforms(
+        self,
+        latents: dict[str, Array],
+        obs: dict[str, Array] | None,
+    ):
         """Infer the deterministic transforms applied under reparameterization.
 
         Note this only applies for TransformReparam (not other deterministic sites).
 
         Args:
             latents: latent variables from the data space (not the base space).
-            *args: Positional arguments for model.
-            **kwargs: Key word arguments for model.
+            obs: Observations. If this is None, we assume that we can infer the
+                reparameterization from the prior, independent from the observations.
         """
         model = self.reparam(set_val=False)
+        model = model.prior if obs is None else model
         validate_data_and_model_match(latents, model, assert_present=model.latent_names)
-        model_trace = trace_except_obs(
-            handlers.substitute(model, latents),
-            self.observed_names,
-            *args,
-            **kwargs,
-        )
+        model = handlers.substitute(model, latents)
+        model_trace = handlers.trace(model).get_trace(obs=obs)
         transforms = trace_to_distribution_transforms(model_trace)
         return {k: t for k, t in transforms.items() if k in self.reparam_names}
 
@@ -160,22 +163,22 @@ class AbstractModel(AbstractModelOrGuide):
     def latents_to_original_space(
         self,
         latents: dict[str, Array],
-        *args,
-        **kwargs,
+        obs: dict[str, Array] | None,
     ) -> dict[str, Array]:
         """Convert a set of latents from the reparameterized space to original space.
 
         Args:
             latents: The set of latents from the reparameterized space.
-            *args: Positional arguments passed when tracing.
-            **kwargs: Key word arguments passed when tracing.
+            obs: Observations. If this is None, we assume we can infer
+                reparameterizations from the prior, with no dependency on the
+                observations.
         """
-        # TODO Again we assume we can trace except obs reliably
         latents = {k: v for k, v in latents.items()}  # Avoid mutating
         model = self.reparam(set_val=True)
+        model = model.prior if obs is None else model
         validate_data_and_model_match(latents, model, assert_present=model.latent_names)
         model = handlers.condition(model, latents)
-        trace = trace_except_obs(model, self.observed_names, *args, **kwargs)
+        trace = handlers.trace(model).get_trace(obs=obs)
 
         for name in self.reparam_names:
             latents.pop(f"{name}_base")
@@ -185,6 +188,10 @@ class AbstractModel(AbstractModelOrGuide):
 
     @property
     def prior(self):
+        """Get the prior distribution.
+
+        This assumes that no latent variables are children of the observed nodes.
+        """
         dummy_obs = {k: ShapeDtypeStruct((), float) for k in self.observed_names}
         model = handlers.condition(self, dummy_obs)  # To avoid sampling observed nodes
         return NumpyroModelToModel(
@@ -196,7 +203,8 @@ class AbstractModel(AbstractModelOrGuide):
 
 
 class NumpyroModelToModel(AbstractModel):
-    # Wrapper to wrap a standard numpyro model to a numpyro guide
+    """Wrap a numpyro model to an AbstractModel isntance."""
+
     model: Callable
     observed_names: frozenset[str]
     reparam_names: frozenset[str]
@@ -215,15 +223,15 @@ class NumpyroModelToModel(AbstractModel):
         self.reparam_names = frozenset(reparam_names)
         self.reparameterized = reparameterized
 
-    def call_without_reparam(self, *args, **kwargs):
-        return self.model(*args, **kwargs)
+    def call_without_reparam(self, obs: dict[str, Array] | None = None):
+        return self.model(obs=obs)
 
 
 class AbstractGuide(AbstractModelOrGuide):
     """Abstract class used for numpyro guides."""
 
     @abstractmethod
-    def __call__(self, obs: dict[str, Array]):
+    def __call__(self):
         """Numpyro model over the latent variables.
 
         Note, these should have a "_base" postfix when transform reparam is used.
@@ -233,24 +241,25 @@ class AbstractGuide(AbstractModelOrGuide):
     def log_prob_original_space(
         self,
         latents: dict,
+        obs: dict[str, Array] | None,
         model: AbstractModel,
-        *args,
+        *,
         reduce: bool = True,
-        **kwargs,
     ):
-        """Compute the log probability in the original space, inferred from model.
+        """Compute the log probability in the original space.
 
         Guides are usually defined in a reparameterized space. This utility allows
-        evaluating the log density for samples from the original space. Currently
-        only reparameterization with TransformReparam is supported.
+        evaluating the log density for samples from the original space, by inferring
+        the reparameterizations from the model. Currently only reparameterization with
+        TransformReparam is supported.
 
         Args:
             latents: Latents from the original space (not the base space).
             model: Model from which to infer the reparameterization used.
-            *args: Positional arguments passed to the model and guide.
+            obs: Observations. If this is None, we assume we can infer the
+                reparameterizations from the prior distribution.
             reduce: Whether to reduce the result to a scalar or return a dictionary
                 of log probabilities for each site.
-            **kwargs: Key word arguments passed to the model and guide.
         """
         model = model.reparam(set_val=False)
         validate_data_and_model_match(
@@ -258,7 +267,7 @@ class AbstractGuide(AbstractModelOrGuide):
             model=model,
             assert_present=model.latent_names,
         )
-        transforms = model.get_reparam_transforms(latents, *args, **kwargs)
+        transforms = model.get_reparam_transforms(latents, obs=obs)
 
         base_samples = {}
         log_dets = {}
@@ -284,19 +293,17 @@ class AbstractGuide(AbstractModelOrGuide):
 
         return log_probs
 
-    def sample(
-        self,
-        key: PRNGKeyArray,
-        *,
-        log_prob: bool = False,
-        reduce: bool = True,
-    ):
+    def sample_and_log_prob(self, key: PRNGKeyArray, *, reduce: bool = True):
         """Sample from the guide, and optionally return its log probability.
 
-        To draw multiple samples, vectorize (jax.vmap) over a set of keys.
+        In some instances, this will be more efficient than calling each methods
+        seperately. To draw multiple samples, vectorize (jax.vmap) over a set of keys.
+
+        Args:
+            key: Jax random key.
+            reduce: Whether to reduce the result to a scalar or return a dictionary
+                of log probabilities for each site.
         """
         trace = handlers.trace(fn=handlers.seed(self, key)).get_trace()
         samples = {k: v["value"] for k, v in trace.items() if v["type"] == "sample"}
-        if not log_prob:
-            return samples
         return samples, trace_to_log_prob(trace, reduce=reduce)

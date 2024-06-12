@@ -3,7 +3,6 @@
 from abc import abstractmethod
 from collections.abc import Callable
 from functools import partial
-from typing import ClassVar
 
 import equinox as eqx
 import jax
@@ -13,14 +12,13 @@ from flowjax.wrappers import unwrap
 from jax import nn
 from jax.lax import stop_gradient
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree, Scalar
-from numpyro.infer import Trace_ELBO
+from numpyro.infer import RenyiELBO, Trace_ELBO
+
 from softce.models import AbstractGuide, AbstractModel
 
 
 class AbstractLoss(eqx.Module):
     """Abstract class representing a loss function."""
-
-    has_aux: eqx.AbstractVar[bool]
 
     @abstractmethod
     def __call__(
@@ -32,7 +30,7 @@ class AbstractLoss(eqx.Module):
         pass
 
 
-class NegativeEvidenceLowerBound(AbstractLoss):
+class EvidenceLowerBoundLoss(AbstractLoss):
     """The negative evidence lower bound (ELBO) loss function.
 
     Args:
@@ -44,7 +42,6 @@ class NegativeEvidenceLowerBound(AbstractLoss):
     model: AbstractModel
     obs: dict[str, Array]
     n_particles: int
-    has_aux: ClassVar[bool] = False
 
     def __init__(
         self,
@@ -71,12 +68,52 @@ class NegativeEvidenceLowerBound(AbstractLoss):
         )
 
 
+class RenyiLoss(AbstractLoss):
+    """The negative evidence lower bound (ELBO) loss function.
+
+    Args:
+        model: Numpyro model.
+        obs: The observed data.
+        n_particals: The number of samples to use in the ELBO approximation.
+    """
+
+    alpha: float | int
+    model: AbstractModel
+    obs: dict[str, Array]
+    n_particles: int
+
+    def __init__(
+        self,
+        *,
+        alpha: float | int,
+        model: AbstractModel,
+        obs: dict[str, Array],
+        n_particles: int,
+    ):
+        self.alpha = alpha
+        self.model = model
+        self.obs = obs
+        self.n_particles = n_particles
+
+    def __call__(
+        self,
+        params: PyTree,
+        static: PyTree,
+        key: PRNGKeyArray,
+    ) -> Float[Scalar, ""]:
+        return RenyiELBO(alpha=self.alpha, num_particles=self.n_particles).loss(
+            key,
+            {},
+            partial(self.model, obs=self.obs),
+            unwrap(eqx.combine(params, static)),
+        )
+
+
 class SoftContrastiveEstimationLoss(AbstractLoss):
     model: AbstractModel
     n_particles: int
     obs: dict[str, Array]
     proposal: Callable | None
-    has_aux: ClassVar[bool] = False
 
     def __init__(
         self,

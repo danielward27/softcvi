@@ -7,6 +7,7 @@ from flowjax.bijections import Affine, Exp
 from flowjax.distributions import Laplace, LogNormal, Normal, Transformed
 from flowjax.experimental.numpyro import sample
 from numpyro import plate
+
 from softce.models import AbstractGuide, AbstractModel
 
 
@@ -68,7 +69,7 @@ def test_log_prob_original_space():
     ).log_prob(
         data["b"],
     )
-    log_prob = guide.log_prob_original_space(data, model)
+    log_prob = guide.log_prob_original_space(data, obs=None, model=model)
     expected = a_log_prob + b_log_prob
     assert pytest.approx(expected) == log_prob
 
@@ -83,7 +84,7 @@ def test_log_prob_original_space():
         ),
     ]
     expected = sum(arr.sum() for arr in expected)
-    realized = guide.log_prob_original_space(data, model)
+    realized = guide.log_prob_original_space(data, obs=None, model=model)
     assert pytest.approx(expected) == realized
 
 
@@ -144,5 +145,5 @@ def test_latents_to_original_space():
     model, _ = simple_model_and_guide()
     latents = model.reparam(set_val=True).prior.sample(jr.PRNGKey(0))
     original_space_1 = model.reparam(set_val=False).prior.sample(jr.PRNGKey(0))
-    original_space_2 = model.latents_to_original_space(latents)
+    original_space_2 = model.latents_to_original_space(latents, obs=None)
     assert original_space_1 == original_space_2

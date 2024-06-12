@@ -5,32 +5,13 @@ from dataclasses import dataclass
 from functools import partial
 
 import jax.random as jr
-from jax import ShapeDtypeStruct, eval_shape
+from jax import eval_shape
 from jax.tree_util import Partial, tree_map
 from jaxtyping import Array
 from numpyro import distributions as ndist
 from numpyro import handlers
 from numpyro.distributions.util import is_identically_one
-from numpyro.infer import util
 from numpyro.ops.pytree import PytreeTrace
-
-
-# TODO data first for easier vmap?
-# TODO this description I believe is incorrect, I assume it is the joint?
-def log_density(model, data, *args, **kwargs):
-    """Compute log density of data under the model.
-
-    We check that all sample sites are either observed in the trace or passed in data.
-    """
-    names = get_sample_site_names(model, *args, **kwargs)
-
-    if data.keys() != names.latent:
-        raise ValueError(
-            f"Data keys {data.keys()} do not match model latents {names.latent}.",
-        )
-
-    validate_data_and_model_match(data, model, *args, **kwargs)
-    return util.log_density(model, args, kwargs, params=data)
 
 
 def shape_only_trace(model: Callable, *args, **kwargs):
@@ -98,18 +79,6 @@ def get_sample_site_names(model: Callable, *args, **kwargs):
             return self.observed | self.latent
 
     return _Names(set(observed), set(latent))
-
-
-def trace_except_obs(model: Callable, observed_nodes: Iterable[str], *args, **kwargs):
-    """Trace a model, excluding the observed nodes.
-
-    This assumes no nodes are decscendents of the observed nodes (often the case
-    if the model describes the assumed data generating process).
-    """
-    dummy_obs = {k: ShapeDtypeStruct((), float) for k in observed_nodes}
-    model = handlers.condition(model, dummy_obs)  # To avoid sampling observed nodes
-    model = handlers.block(model, hide=observed_nodes)
-    return handlers.trace(model).get_trace(*args, **kwargs)
 
 
 def trace_to_distribution_transforms(trace: dict):
