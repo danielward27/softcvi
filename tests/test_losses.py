@@ -42,6 +42,20 @@ test_cases = [
         model=Model().reparam(set_val=True),
         obs={"b": jnp.array(jnp.arange(3))},
         n_particles=2,
+        alpha=0.5,
+        negative_distribution="posterior",
+    ),
+    losses.SoftContrastiveEstimationLoss(
+        model=Model().reparam(set_val=True),
+        obs={"b": jnp.array(jnp.arange(3))},
+        n_particles=2,
+        alpha=0.2,
+        negative_distribution="proposal",
+    ),
+    losses.SelfNormalizedForwardKL(
+        model=Model().reparam(set_val=True),
+        obs={"b": jnp.array(jnp.arange(3))},
+        n_particles=2,
     ),
 ]
 

@@ -1,11 +1,12 @@
 """Numpyro compatible loss functions."""
 
 from abc import abstractmethod
-from collections.abc import Callable
 from functools import partial
+from typing import Literal
 
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 import jax.random as jr
 import optax
 from flowjax.wrappers import unwrap
@@ -109,42 +110,22 @@ class RenyiLoss(AbstractLoss):
         )
 
 
-class SoftContrastiveEstimationLoss(AbstractLoss):
+class SelfNormalizedForwardKL(AbstractLoss):
+    # Following https://arxiv.org/pdf/2203.04176
     model: AbstractModel
     n_particles: int
     obs: dict[str, Array]
-    proposal: Callable | None
 
     def __init__(
         self,
         *,
-        model: AbstractModel,
-        n_particles: int,
+        model,
+        n_particles,
         obs: dict[str, Array],
-        proposal: Callable | None = None,
     ):
-        """Contrastive loss function.
-
-        A proposal is sampled, and classficiation labels generated from a comparison
-        of joint probabilities. Parameterizing a classifier in terms of q(theta|x)
-
-        Args:
-            model: _description_
-            n_particles: _description_
-            obs: _description_
-            proposal: _description_. Defaults to None.
-
-        Raises:
-            ValueError: _description_
-        """
-        if n_particles < 2:
-            raise ValueError(
-                "Need at least two particles for classification objective.",
-            )
         self.model = model
         self.n_particles = n_particles
         self.obs = obs
-        self.proposal = proposal
 
     @eqx.filter_jit
     def __call__(
@@ -153,22 +134,77 @@ class SoftContrastiveEstimationLoss(AbstractLoss):
         static: AbstractGuide,
         key: PRNGKeyArray,
     ) -> Float[Scalar, ""]:
-        if self.proposal is not None:
-            proposal = self.proposal
-        else:
-            proposal = unwrap(eqx.combine(stop_gradient(params), static))
 
+        proposal = unwrap(eqx.combine(stop_gradient(params), static))
+        guide = unwrap(eqx.combine(params, static))
+        samples, proposal_lps = jax.vmap(proposal.sample_and_log_prob)(
+            jr.split(key, self.n_particles),
+        )
+
+        joint_lps = jax.vmap(lambda latents: self.model.log_prob(latents | self.obs))(
+            samples
+        )
+
+        log_weights = joint_lps - proposal_lps
+        normalized_weights = nn.softmax(log_weights)
+        guide_lps = jax.vmap(guide.log_prob)(samples)
+        return jnp.mean(normalized_weights * (joint_lps - guide_lps))
+
+
+class SoftContrastiveEstimationLoss(AbstractLoss):
+    model: AbstractModel
+    n_particles: int
+    obs: dict[str, Array]
+    alpha: int | float
+    negative_distribution: Literal["proposal", "posterior"]
+
+    def __init__(
+        self,
+        *,
+        model: AbstractModel,
+        n_particles: int,
+        obs: dict[str, Array],
+        alpha: int | float,
+        negative_distribution: Literal["proposal", "posterior"],
+    ):
+        """Contrastive loss function."""
+        if n_particles < 2:
+            raise ValueError(
+                "Need at least two particles for classification objective.",
+            )
+        self.model = model
+        self.n_particles = n_particles
+        self.obs = obs
+        self.alpha = alpha
+        self.negative_distribution = negative_distribution
+
+    @eqx.filter_jit
+    def __call__(
+        self,
+        params: AbstractGuide,
+        static: AbstractGuide,
+        key: PRNGKeyArray,
+    ) -> Float[Scalar, ""]:
+        proposal = unwrap(eqx.combine(stop_gradient(params), static))
         guide = unwrap(eqx.combine(params, static))
 
         def get_log_probs(key):
-            latents = proposal.sample(key)
+            latents, proposal_log_prob = proposal.sample_and_log_prob(key)
             joint_lp = self.model.log_prob(latents | self.obs)
-            return (joint_lp, guide.log_prob(latents))
+            return (joint_lp, proposal_log_prob, guide.log_prob(latents))
 
         key, subkey = jr.split(key)
-        joint_log_probs, guide_log_probs = jax.vmap(get_log_probs)(
+
+        # proposal_log_probs only used in second case - inefficient?
+        joint_log_probs, proposal_log_probs, guide_log_probs = jax.vmap(get_log_probs)(
             jr.split(subkey, self.n_particles),
         )
-        labels = nn.softmax(joint_log_probs)
-        log_predictions = nn.log_softmax(guide_log_probs)
+        if self.negative_distribution == "posterior":
+            negative_log_probs = joint_log_probs * self.alpha
+        else:
+            assert self.negative_distribution == "proposal"
+            negative_log_probs = proposal_log_probs * self.alpha
+
+        labels = nn.softmax(joint_log_probs - negative_log_probs)
+        log_predictions = nn.log_softmax(guide_log_probs - negative_log_probs)
         return optax.losses.softmax_cross_entropy(log_predictions, labels).mean()
