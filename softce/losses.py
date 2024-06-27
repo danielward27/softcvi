@@ -110,7 +110,7 @@ class RenyiLoss(AbstractLoss):
         )
 
 
-class SelfNormalizedForwardKL(AbstractLoss):
+class SelfNormImportanceWeightedForwardKLLoss(AbstractLoss):
     # Following https://arxiv.org/pdf/2203.04176
     model: AbstractModel
     n_particles: int
@@ -142,7 +142,7 @@ class SelfNormalizedForwardKL(AbstractLoss):
         )
 
         joint_lps = jax.vmap(lambda latents: self.model.log_prob(latents | self.obs))(
-            samples
+            samples,
         )
 
         log_weights = joint_lps - proposal_lps
@@ -165,7 +165,7 @@ class SoftContrastiveEstimationLoss(AbstractLoss):
         n_particles: int,
         obs: dict[str, Array],
         alpha: int | float,
-        negative_distribution: Literal["proposal", "posterior"],
+        negative_distribution: Literal["proposal", "posterior"] = "proposal",
     ):
         """Contrastive loss function."""
         if n_particles < 2:
