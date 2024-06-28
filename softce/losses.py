@@ -155,7 +155,7 @@ class SoftContrastiveEstimationLoss(AbstractLoss):
     model: AbstractModel
     n_particles: int
     obs: dict[str, Array]
-    alpha: int | float
+    alpha: int | float | tuple[int | float, int | float]
     negative_distribution: Literal["proposal", "posterior"]
 
     def __init__(
@@ -167,7 +167,17 @@ class SoftContrastiveEstimationLoss(AbstractLoss):
         alpha: int | float,
         negative_distribution: Literal["proposal", "posterior"] = "proposal",
     ):
-        """Contrastive loss function."""
+        """Contrastive loss function.
+
+        Args:
+            model: The model.
+            n_particles: The number of particles used for estimating the loss.
+            obs: The dictionary of observations.
+            alpha: Tempering parameter on the interval [0, 1] applied to the negative
+                distribution, i.e. raising the negative distribution to a power.
+            negative_distribution: The negative distribution, either "proposal"
+                or "posterior".
+        """
         if n_particles < 2:
             raise ValueError(
                 "Need at least two particles for classification objective.",
@@ -189,22 +199,24 @@ class SoftContrastiveEstimationLoss(AbstractLoss):
         guide = unwrap(eqx.combine(params, static))
 
         def get_log_probs(key):
-            latents, proposal_log_prob = proposal.sample_and_log_prob(key)
-            joint_lp = self.model.log_prob(latents | self.obs)
-            return (joint_lp, proposal_log_prob, guide.log_prob(latents))
+            if self.negative_distribution == "posterior":
+                latents = proposal.sample(key)
+                joint_lp = self.model.log_prob(latents | self.obs)
+                negative_lp = joint_lp * self.alpha
+            else:
+                assert self.negative_distribution == "proposal"
+                latents, proposal_lp = proposal.sample_and_log_prob(key)
+                joint_lp = self.model.log_prob(latents | self.obs)
+                negative_lp = proposal_lp * self.alpha
+
+            return {
+                "joint": joint_lp,
+                "negative": negative_lp,
+                "guide": guide.log_prob(latents),
+            }
 
         key, subkey = jr.split(key)
-
-        # proposal_log_probs only used in second case - inefficient?
-        joint_log_probs, proposal_log_probs, guide_log_probs = jax.vmap(get_log_probs)(
-            jr.split(subkey, self.n_particles),
-        )
-        if self.negative_distribution == "posterior":
-            negative_log_probs = joint_log_probs * self.alpha
-        else:
-            assert self.negative_distribution == "proposal"
-            negative_log_probs = proposal_log_probs * self.alpha
-
-        labels = nn.softmax(joint_log_probs - negative_log_probs)
-        log_predictions = nn.log_softmax(guide_log_probs - negative_log_probs)
+        log_probs = jax.vmap(get_log_probs)(jr.split(subkey, self.n_particles))
+        labels = nn.softmax(log_probs["joint"] - log_probs["negative"])
+        log_predictions = nn.log_softmax(log_probs["guide"] - log_probs["negative"])
         return optax.losses.softmax_cross_entropy(log_predictions, labels).mean()

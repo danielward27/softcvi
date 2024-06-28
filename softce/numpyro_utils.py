@@ -11,6 +11,7 @@ from jaxtyping import Array
 from numpyro import distributions as ndist
 from numpyro import handlers
 from numpyro.distributions.util import is_identically_one
+from numpyro.infer.initialization import init_to_sample
 from numpyro.ops.pytree import PytreeTrace
 
 
@@ -25,7 +26,12 @@ def shape_only_trace(model: Callable, *args, **kwargs):
        kwargs: Key word arguments passed to model.
     """
 
+    # Adapted from https://github.com/pyro-ppl/numpyro/blob/5af9ebda72bd7aeb08c61e4248ecd0d982473224/numpyro/infer/inspect.py#L39
     def get_trace(fn):
+        fn = handlers.substitute(
+            handlers.seed(model, 0),
+            substitute_fn=init_to_sample,
+        )  # Support improper uniform
         fn = handlers.seed(fn, jr.PRNGKey(0))
         trace = handlers.trace(fn).get_trace(*args, **kwargs)
 

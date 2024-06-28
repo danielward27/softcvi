@@ -32,6 +32,16 @@ def test_trace_to_log_prob():
     assert pytest.approx(log_probs["y"]) == Normal().log_prob(obs - trace["x"]["value"])
 
 
+def test_trace_to_log_prob_factor():
+
+    def factor_model(obs=None):
+        sample("x", numpyro.distributions.Uniform())
+        numpyro.factor("factor", 20)
+
+    trace = handlers.trace(handlers.seed(factor_model, jr.PRNGKey(0))).get_trace()
+    assert pytest.approx(20) == trace_to_log_prob(trace, reduce=True)
+
+
 def test_trace_to_distribution_transforms():
 
     def model(obs=None):
