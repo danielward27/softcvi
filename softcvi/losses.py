@@ -15,7 +15,7 @@ from jax.lax import stop_gradient
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree, Scalar
 from numpyro.infer import RenyiELBO, Trace_ELBO
 
-from softce.models import AbstractGuide, AbstractModel
+from softcvi.models import AbstractGuide, AbstractModel
 
 
 class AbstractLoss(eqx.Module):
@@ -199,6 +199,7 @@ class SoftContrastiveEstimationLoss(AbstractLoss):
         guide = unwrap(eqx.combine(params, static))
 
         def get_log_probs(key):
+
             if self.negative_distribution == "posterior":
                 latents = proposal.sample(key)
                 joint_lp = self.model.log_prob(latents | self.obs)

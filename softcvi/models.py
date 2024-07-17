@@ -21,7 +21,7 @@ from numpyro import handlers
 from numpyro.distributions.transforms import ComposeTransform
 from numpyro.infer import reparam
 
-from softce.numpyro_utils import (
+from softcvi.numpyro_utils import (
     get_sample_site_names,
     trace_to_distribution_transforms,
     trace_to_log_prob,

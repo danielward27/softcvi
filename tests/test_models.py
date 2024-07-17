@@ -8,7 +8,7 @@ from flowjax.distributions import Laplace, LogNormal, Normal, Transformed
 from flowjax.experimental.numpyro import sample
 from numpyro import plate
 
-from softce.models import AbstractGuide, AbstractModel
+from softcvi.models import AbstractGuide, AbstractModel
 
 
 def simple_model_and_guide():

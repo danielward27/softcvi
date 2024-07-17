@@ -7,8 +7,8 @@ import pytest
 from flowjax.distributions import AbstractDistribution, Normal
 from flowjax.experimental.numpyro import sample
 
-from softce import losses
-from softce.models import AbstractGuide, AbstractModel
+from softcvi import losses
+from softcvi.models import AbstractGuide, AbstractModel
 
 
 class Model(AbstractModel):
@@ -70,7 +70,7 @@ def test_losses_run(loss):
 
 
 @pytest.mark.parametrize("negative_distribution", ["posterior", "proposal"])
-def test_softce_grad_zero_at_optimum(negative_distribution):
+def test_softcvi_grad_zero_at_optimum(negative_distribution):
     obs = {"b": jnp.array(jnp.arange(3))}
 
     class OptimalGuide(AbstractGuide):
