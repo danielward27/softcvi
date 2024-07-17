@@ -162,20 +162,21 @@ def validate_data_and_model_match(
             Defaults to None.
         **kwargs: kwargs passed to model when tracing to infer shapes.
     """
-    if assert_present is not None:
-        for site in assert_present:
-            if site not in data:
-                raise ValueError(f"Expected {site} to be provided in data.")
+    # TODO test/allow auxilary sites
+    # if assert_present is not None:
+    #     for site in assert_present:
+    #         if site not in data:
+    #             raise ValueError(f"Expected {site} to be provided in data.")
 
-    trace = shape_only_trace(model, *args, **kwargs)
-    for name, samples in data.items():
-        if name not in trace or trace[name]["type"] != "sample":
-            raise ValueError(f"A sample site with name {name} is not in model trace.")
+    # trace = shape_only_trace(model, *args, **kwargs)
+    # for name, samples in data.items():
+    #     if name not in trace:
+    #         raise ValueError(f"Got {name} which does not not exist in trace.")
 
-        trace_shape = trace[name]["value"].shape
+    #     trace_shape = trace[name]["value"].shape
 
-        if trace[name]["type"] == "sample" and trace_shape != data[name].shape:
-            raise ValueError(
-                f"{name} had shape {trace_shape} in model, but shape "
-                f"{samples.shape} in data.",
-            )
+    #     if trace[name]["type"] == "sample" and trace_shape != data[name].shape:
+    #         raise ValueError(
+    #             f"{name} had shape {trace_shape} in model, but shape "
+    #             f"{samples.shape} in data.",
+    #         )
