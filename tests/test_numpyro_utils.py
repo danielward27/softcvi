@@ -106,7 +106,7 @@ def test_validate_data_and_model_match():
             assert_present=["y"],
         )
 
-    with pytest.raises(ValueError, match="not in model"):
+    with pytest.raises(ValueError, match="does not exist in trace"):
         validate_data_and_model_match({"z": jnp.ones(5), "x": jnp.ones(5)}, model)
 
     with pytest.raises(ValueError, match="shape"):
