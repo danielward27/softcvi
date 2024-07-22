@@ -171,7 +171,7 @@ def validate_data_and_model_match(
     trace = shape_only_trace(model, *args, **kwargs)
     for name, samples in data.items():
         if name not in trace:
-            raise ValueError(f"Got {name} which does not not exist in trace.")
+            raise ValueError(f"Got {name} which does not exist in trace.")
 
         trace_shape = trace[name]["value"].shape
 
