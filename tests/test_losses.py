@@ -69,9 +69,44 @@ def test_losses_run(loss):
     assert loss_val.shape == ()
 
 
-@pytest.mark.parametrize("negative_distribution", ["posterior", "proposal"])
-def test_softcvi_grad_zero_at_optimum(negative_distribution):
-    obs = {"b": jnp.array(jnp.arange(3))}
+obs = {"b": jnp.array(jnp.arange(3))}
+
+test_cases = {
+    "SoftCVI-proposal": (
+        losses.SoftContrastiveEstimationLoss(
+            model=Model().reparam(set_val=True),
+            obs=obs,
+            n_particles=2,
+            alpha=0.75,
+            negative_distribution="proposal",
+        ),
+        True,
+    ),
+    "SoftCVI-posterior": (
+        losses.SoftContrastiveEstimationLoss(
+            model=Model().reparam(set_val=True),
+            obs=obs,
+            n_particles=2,
+            alpha=0.75,
+            negative_distribution="posterior",
+        ),
+        True,
+    ),
+    "SNIS-fKL": (
+        losses.SelfNormImportanceWeightedForwardKLLoss(
+            model=Model().reparam(set_val=True),
+            obs=obs,
+            n_particles=2,
+        ),
+        False,
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("loss", "expect_zero_grad"), test_cases.values(), ids=test_cases.keys()
+)
+def test_grad_zero_at_optimum(loss, *, expect_zero_grad: bool):
 
     class OptimalGuide(AbstractGuide):
         a_guide: AbstractDistribution
@@ -82,20 +117,11 @@ def test_softcvi_grad_zero_at_optimum(negative_distribution):
             self.a_guide = Normal(jnp.full(3, posterior_mean), posterior_variance**0.5)
 
         def __call__(self):
-            sample("a", Normal(jnp.ones(3)))
+            sample("a", self.a_guide)
 
-    loss = losses.SoftContrastiveEstimationLoss(
-        model=Model().reparam(set_val=True),
-        obs=obs,
-        n_particles=2,
-        alpha=0.75,
-        negative_distribution=negative_distribution,
-    )
-
-    guide = OptimalGuide(obs)
+    guide = OptimalGuide(loss.obs)
     params, static = eqx.partition(guide, eqx.is_inexact_array)
-
-    grad = jax.grad(loss)(params, static, jr.PRNGKey(0))
+    grad = jax.grad(loss)(params, static, jr.PRNGKey(1))
     grad = jax.flatten_util.ravel_pytree(grad)[0]
-
-    assert pytest.approx(grad) == 0
+    is_zero_grad = pytest.approx(grad, abs=1e-6) == 0
+    assert is_zero_grad is expect_zero_grad
