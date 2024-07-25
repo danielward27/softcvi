@@ -1,6 +1,6 @@
 [project]
 authors = [{ name = "Daniel Ward", email = "danielward27@outlook.com" }]
-dependencies = ["flowjax", "equinox", "tqdm", "optax", "numpyro"]
+dependencies = ["flowjax>=13.0", "equinox", "tqdm", "optax", "numpyro"]
 description = "Contrastive learning for posterior estimation."
 name = "softcvi"
 readme = "README.md"
