@@ -58,6 +58,12 @@ class AbstractModelOrGuide(eqx.Module):
 class AbstractModel(AbstractModelOrGuide):
     """Abstract class used for numpyro models.
 
+    The class serves two purposes:
+        1) Facilitating easy and togglable reparameterization.
+        2) Giving access to a more readable methods for sampling and density evaluation.
+
+    The main purpose of this class is to facilitate togglable reparameterization.
+
     Attributes:
         observed_names: Names for the observed nodes.
         reparam_names:  Names of latents to which TransformReparam is applied,

@@ -27,7 +27,7 @@ class AbstractLoss(eqx.Module):
         params: AbstractGuide,
         static: AbstractGuide,
         key: PRNGKeyArray,
-    ) -> Float[Scalar, ""]:
+    ) -> Float[Scalar, " "]:
         pass
 
 
@@ -70,26 +70,27 @@ class EvidenceLowerBoundLoss(AbstractLoss):
 
 
 class RenyiLoss(AbstractLoss):
-    """The negative evidence lower bound (ELBO) loss function.
+    """Wraps numpyro Renyi objective. See https://arxiv.org/abs/1602.02311.
 
     Args:
+        alpha: alpha value.
         model: Numpyro model.
         obs: The observed data.
-        n_particals: The number of samples to use in the ELBO approximation.
+        n_particles: The number of samples to use in the ELBO approximation.
     """
 
-    alpha: float | int
     model: AbstractModel
     obs: dict[str, Array]
     n_particles: int
+    alpha: float | int
 
     def __init__(
         self,
         *,
-        alpha: float | int,
         model: AbstractModel,
         obs: dict[str, Array],
         n_particles: int,
+        alpha: float | int,
     ):
         self.alpha = alpha
         self.model = model
@@ -111,7 +112,16 @@ class RenyiLoss(AbstractLoss):
 
 
 class SelfNormImportanceWeightedForwardKLLoss(AbstractLoss):
-    # Following https://arxiv.org/pdf/2203.04176
+    """A self normalized importance weighted estimate of the forward KL divergence.
+
+    We follow the gradient estimator from  https://arxiv.org/pdf/2203.04176.
+
+    Args:
+        model: The model.
+        n_particles: Number of particles to use in loss approximation.
+        obs: The dictionary of observations.
+    """
+
     model: AbstractModel
     n_particles: int
     obs: dict[str, Array]
@@ -119,7 +129,7 @@ class SelfNormImportanceWeightedForwardKLLoss(AbstractLoss):
     def __init__(
         self,
         *,
-        model,
+        model: AbstractModel,
         n_particles,
         obs: dict[str, Array],
     ):
@@ -148,14 +158,28 @@ class SelfNormImportanceWeightedForwardKLLoss(AbstractLoss):
         log_weights = joint_lps - proposal_lps
         normalized_weights = nn.softmax(log_weights)
         guide_lps = jax.vmap(guide.log_prob)(samples)
-        return jnp.mean(normalized_weights * (joint_lps - guide_lps))
+        return jnp.sum(normalized_weights * (joint_lps - guide_lps))
 
 
 class SoftContrastiveEstimationLoss(AbstractLoss):
+    """The SoftCVI loss function.
+
+    Args:
+        model: The model.
+        n_particles: The number of particles used for estimating the loss.
+        obs: The dictionary of observations.
+        alpha: Tempering parameter on the interval [0, 1] applied to the negative
+            distribution, i.e. raising the negative distribution to a power.
+        negative_distribution: The negative distribution, either "proposal", in which
+            case we use ``stop_gradient(guide)`` as the negative distribution,
+            or "posterior", in which case we use the model joint density. Defaults to
+            "proposal".
+    """
+
     model: AbstractModel
     n_particles: int
     obs: dict[str, Array]
-    alpha: int | float | tuple[int | float, int | float]
+    alpha: int | float
     negative_distribution: Literal["proposal", "posterior"]
 
     def __init__(
@@ -167,17 +191,7 @@ class SoftContrastiveEstimationLoss(AbstractLoss):
         alpha: int | float,
         negative_distribution: Literal["proposal", "posterior"] = "proposal",
     ):
-        """Contrastive loss function.
 
-        Args:
-            model: The model.
-            n_particles: The number of particles used for estimating the loss.
-            obs: The dictionary of observations.
-            alpha: Tempering parameter on the interval [0, 1] applied to the negative
-                distribution, i.e. raising the negative distribution to a power.
-            negative_distribution: The negative distribution, either "proposal"
-                or "posterior".
-        """
         if n_particles < 2:
             raise ValueError(
                 "Need at least two particles for classification objective.",
