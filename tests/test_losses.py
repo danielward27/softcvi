@@ -104,7 +104,7 @@ test_cases = {
 
 
 @pytest.mark.parametrize(
-    ("loss", "expect_zero_grad"), test_cases.values(), ids=test_cases.keys()
+    ("loss", "expect_zero_grad"), test_cases.values(), ids=test_cases.keys(),
 )
 def test_grad_zero_at_optimum(loss, *, expect_zero_grad: bool):
 
