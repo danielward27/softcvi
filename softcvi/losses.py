@@ -114,17 +114,23 @@ class RenyiLoss(AbstractLoss):
 class SelfNormImportanceWeightedForwardKLLoss(AbstractLoss):
     """A self normalized importance weighted estimate of the forward KL divergence.
 
-    We follow the gradient estimator from  https://arxiv.org/pdf/2203.04176.
+    We follow the gradient estimator shown in  https://arxiv.org/pdf/2203.04176 by
+    default, but provide an option for the lower variance estimator introduced in
+    https://arxiv.org/abs/2407.15687.
 
     Args:
         model: The model.
         n_particles: Number of particles to use in loss approximation.
         obs: The dictionary of observations.
+        low_variance: Whether to add the gradient of the average variational
+            probabilities to the loss, which will reduce the variance when the
+            variational distribution is close to the true posterior.
     """
 
     model: AbstractModel
     n_particles: int
     obs: dict[str, Array]
+    low_variance: bool
 
     def __init__(
         self,
@@ -132,10 +138,12 @@ class SelfNormImportanceWeightedForwardKLLoss(AbstractLoss):
         model: AbstractModel,
         n_particles,
         obs: dict[str, Array],
+        low_variance: bool = False,
     ):
         self.model = model
         self.n_particles = n_particles
         self.obs = obs
+        self.low_variance = low_variance
 
     @eqx.filter_jit
     def __call__(
@@ -158,7 +166,11 @@ class SelfNormImportanceWeightedForwardKLLoss(AbstractLoss):
         log_weights = joint_lps - proposal_lps
         normalized_weights = nn.softmax(log_weights)
         guide_lps = jax.vmap(guide.log_prob)(samples)
-        return jnp.sum(normalized_weights * (joint_lps - guide_lps))
+        loss = jnp.sum(normalized_weights * (joint_lps - guide_lps))
+        if self.low_variance:
+            mean_lp = jnp.mean(guide_lps)
+            loss += mean_lp - stop_gradient(mean_lp)  # Avoid changing loss val
+        return loss
 
 
 class SoftContrastiveEstimationLoss(AbstractLoss):
