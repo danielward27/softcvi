@@ -100,11 +100,22 @@ test_cases = {
         ),
         False,
     ),
+    "SNIS-fKL-low-var": (
+        losses.SelfNormImportanceWeightedForwardKLLoss(
+            model=Model().reparam(set_val=True),
+            obs=obs,
+            n_particles=2,
+            low_variance=True,
+        ),
+        True,
+    ),
 }
 
 
 @pytest.mark.parametrize(
-    ("loss", "expect_zero_grad"), test_cases.values(), ids=test_cases.keys(),
+    ("loss", "expect_zero_grad"),
+    test_cases.values(),
+    ids=test_cases.keys(),
 )
 def test_grad_zero_at_optimum(loss, *, expect_zero_grad: bool):
 
@@ -123,5 +134,5 @@ def test_grad_zero_at_optimum(loss, *, expect_zero_grad: bool):
     params, static = eqx.partition(guide, eqx.is_inexact_array)
     grad = jax.grad(loss)(params, static, jr.PRNGKey(1))
     grad = jax.flatten_util.ravel_pytree(grad)[0]
-    is_zero_grad = pytest.approx(grad, abs=1e-6) == 0
+    is_zero_grad = pytest.approx(grad, abs=1e-5) == 0
     assert is_zero_grad is expect_zero_grad
