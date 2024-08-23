@@ -15,6 +15,7 @@ from abc import abstractmethod
 from collections.abc import Callable, Iterable
 
 import equinox as eqx
+from flowjax.wrappers import unwrap
 from jax import ShapeDtypeStruct
 from jaxtyping import Array, PRNGKeyArray
 from numpyro import handlers
@@ -38,11 +39,11 @@ class AbstractModelOrGuide(eqx.Module):
 
     @property
     def site_names(self) -> set:
-        return get_sample_site_names(self).all
+        return get_sample_site_names(unwrap(self)).all
 
     def sample(self, key: PRNGKeyArray) -> dict[str, Array]:
         """Sample the joint distribution, returning a tuple, (latents, observed)."""
-        trace = handlers.trace(handlers.seed(self, key)).get_trace()
+        trace = handlers.trace(handlers.seed(unwrap(self), key)).get_trace()
         return {k: v["value"] for k, v in trace.items() if v["type"] == "sample"}
 
     def log_prob(self, data: dict[str, Array], *, reduce: bool = True):
@@ -50,6 +51,7 @@ class AbstractModelOrGuide(eqx.Module):
 
         Data should include all nodes (latents and observed).
         """
+        self = unwrap(self)
         validate_data_and_model_match(data, self, assert_present=self.site_names)
         trace = handlers.trace(handlers.substitute(self, data)).get_trace()
         return trace_to_log_prob(trace, reduce=reduce)
@@ -89,6 +91,7 @@ class AbstractModel(AbstractModelOrGuide):
 
     def __call__(self, obs: dict[str, Array] | None = None):
         """The numpyro model, applying reparameterizations."""
+        self = unwrap(self)
         if self.reparameterized is None:
             raise ValueError(
                 "Reparameterized flag was None. Set to True/False using model.reparam.",
@@ -127,7 +130,7 @@ class AbstractModel(AbstractModelOrGuide):
             obs: Observations. If this is None, we assume that we can infer the
                 reparameterization from the prior, independent from the observations.
         """
-        model = self.reparam(set_val=False)
+        model = unwrap(self).reparam(set_val=False)
         model = model.prior if obs is None else model
         validate_data_and_model_match(latents, model, assert_present=model.latent_names)
         model = handlers.substitute(model, latents)
@@ -144,6 +147,7 @@ class AbstractModel(AbstractModelOrGuide):
 
         To generate mutiple samples, use e.g. jax.vmap over a set of keys.
         """
+        self = unwrap(self)
         validate_data_and_model_match(latents, self, assert_present=self.latent_names)
         predictive = handlers.trace(
             handlers.seed(
@@ -160,6 +164,7 @@ class AbstractModel(AbstractModelOrGuide):
         *,
         reduce: bool = True,
     ):
+        self = unwrap(self)
         validate_data_and_model_match(latents, self, assert_present=self.latent_names)
         validate_data_and_model_match(obs, self, assert_present=self.observed_names)
         trace = handlers.trace(handlers.substitute(self, latents)).get_trace(obs=obs)
@@ -179,6 +184,7 @@ class AbstractModel(AbstractModelOrGuide):
                 reparameterizations from the prior, with no dependency on the
                 observations.
         """
+        self = unwrap(self)
         latents = {k: v for k, v in latents.items()}  # Avoid mutating
         model = self.reparam(set_val=True)
         model = model.prior if obs is None else model
@@ -209,7 +215,10 @@ class AbstractModel(AbstractModelOrGuide):
 
 
 class NumpyroModelToModel(AbstractModel):
-    """Wrap a numpyro model to an AbstractModel isntance."""
+    """Wrap a numpyro model to an AbstractModel isntance.
+
+    Currently assumes no trainable model parameters.
+    """
 
     model: Callable
     observed_names: frozenset[str]
@@ -223,7 +232,6 @@ class NumpyroModelToModel(AbstractModel):
         reparam_names: Iterable,
         reparameterized: bool | None = None,
     ):
-
         self.model = model
         self.observed_names = frozenset(observed_names)
         self.reparam_names = frozenset(reparam_names)
@@ -267,7 +275,7 @@ class AbstractGuide(AbstractModelOrGuide):
             reduce: Whether to reduce the result to a scalar or return a dictionary
                 of log probabilities for each site.
         """
-        model = model.reparam(set_val=False)
+        model = unwrap(model).reparam(set_val=False)
         validate_data_and_model_match(
             data=latents,
             model=model,
@@ -286,7 +294,9 @@ class AbstractGuide(AbstractModelOrGuide):
             else:
                 base_samples[k] = latent
 
-        trace = handlers.trace(handlers.condition(self, base_samples)).get_trace()
+        trace = handlers.trace(
+            handlers.condition(unwrap(self), base_samples),
+        ).get_trace()
         log_probs = trace_to_log_prob(trace, reduce=False)
 
         for k in transforms.keys():
@@ -310,6 +320,7 @@ class AbstractGuide(AbstractModelOrGuide):
             reduce: Whether to reduce the result to a scalar or return a dictionary
                 of log probabilities for each site.
         """
+        self = unwrap(self)
         trace = handlers.trace(fn=handlers.seed(self, key)).get_trace()
         samples = {k: v["value"] for k, v in trace.items() if v["type"] == "sample"}
         return samples, trace_to_log_prob(trace, reduce=reduce)

@@ -5,7 +5,7 @@ description = "Contrastive learning for posterior estimation."
 name = "softcvi"
 readme = "README.md"
 requires-python = ">=3.10"
-version = "0.1.0"
+version = "0.2.0"
 
 [build-system]
 requires = ["setuptools", "setuptools-scm"]
