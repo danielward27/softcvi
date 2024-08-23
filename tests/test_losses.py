@@ -30,32 +30,27 @@ class Guide(AbstractGuide):
 
 test_cases = [
     losses.EvidenceLowerBoundLoss(
-        model=Model().reparam(set_val=True),
         obs={"b": jnp.array(jnp.arange(3))},
         n_particles=2,
     ),
     losses.RenyiLoss(
         alpha=0,
-        model=Model().reparam(set_val=True),
         obs={"b": jnp.array(jnp.arange(3))},
         n_particles=2,
     ),
     losses.SoftContrastiveEstimationLoss(
-        model=Model().reparam(set_val=True),
         obs={"b": jnp.array(jnp.arange(3))},
         n_particles=2,
         alpha=0.5,
         negative_distribution="posterior",
     ),
     losses.SoftContrastiveEstimationLoss(
-        model=Model().reparam(set_val=True),
         obs={"b": jnp.array(jnp.arange(3))},
         n_particles=2,
         alpha=0.2,
         negative_distribution="proposal",
     ),
     losses.SelfNormImportanceWeightedForwardKLLoss(
-        model=Model().reparam(set_val=True),
         obs={"b": jnp.array(jnp.arange(3))},
         n_particles=2,
     ),
@@ -64,8 +59,11 @@ test_cases = [
 
 @pytest.mark.parametrize("loss", test_cases)
 def test_losses_run(loss):
-    guide = Guide()
-    loss_val = loss(*eqx.partition(guide, eqx.is_inexact_array), key=jr.PRNGKey(0))
+    model, guide = Model().reparam(set_val=True), Guide()
+    loss_val = loss(
+        *eqx.partition((model, guide), eqx.is_inexact_array),
+        key=jr.PRNGKey(0),
+    )
     assert loss_val.shape == ()
 
 
@@ -74,7 +72,6 @@ obs = {"b": jnp.array(jnp.arange(3))}
 test_cases = {
     "SoftCVI-proposal": (
         losses.SoftContrastiveEstimationLoss(
-            model=Model().reparam(set_val=True),
             obs=obs,
             n_particles=2,
             alpha=0.75,
@@ -84,7 +81,6 @@ test_cases = {
     ),
     "SoftCVI-posterior": (
         losses.SoftContrastiveEstimationLoss(
-            model=Model().reparam(set_val=True),
             obs=obs,
             n_particles=2,
             alpha=0.75,
@@ -94,7 +90,6 @@ test_cases = {
     ),
     "SNIS-fKL": (
         losses.SelfNormImportanceWeightedForwardKLLoss(
-            model=Model().reparam(set_val=True),
             obs=obs,
             n_particles=2,
         ),
@@ -102,7 +97,6 @@ test_cases = {
     ),
     "SNIS-fKL-low-var": (
         losses.SelfNormImportanceWeightedForwardKLLoss(
-            model=Model().reparam(set_val=True),
             obs=obs,
             n_particles=2,
             low_variance=True,
@@ -130,8 +124,9 @@ def test_grad_zero_at_optimum(loss, *, expect_zero_grad: bool):
         def __call__(self):
             sample("a", self.a_guide)
 
+    model = Model().reparam(set_val=True)
     guide = OptimalGuide(loss.obs)
-    params, static = eqx.partition(guide, eqx.is_inexact_array)
+    params, static = eqx.partition((model, guide), eqx.is_inexact_array)
     grad = jax.grad(loss)(params, static, jr.PRNGKey(1))
     grad = jax.flatten_util.ravel_pytree(grad)[0]
     is_zero_grad = pytest.approx(grad, abs=1e-5) == 0

@@ -1,4 +1,13 @@
-"""Numpyro compatible loss functions."""
+"""Loss functions.
+
+The general potern taken here is that the loss functions take a partitioned 
+``(model, guide)`` tuple as the first two arguments (see ``equinox.partition``), and a
+key as the third. This supports trainable parameters in both the model and guide.
+As such, for all inexact arrays in the model and guide, explicitly marking them
+as non-trainable is required if they should be considered fixed, for example using
+using ``flowjax.wrappers.non_trainable``, or by accessing with a property that
+applies  ``jax.lax.stop_gradient``.
+"""
 
 from abc import abstractmethod
 from functools import partial
@@ -12,7 +21,7 @@ import optax
 from flowjax.wrappers import unwrap
 from jax import nn
 from jax.lax import stop_gradient
-from jaxtyping import Array, Float, PRNGKeyArray, PyTree, Scalar
+from jaxtyping import Array, Float, PRNGKeyArray, Scalar
 from numpyro.infer import RenyiELBO, Trace_ELBO
 
 from softcvi.models import AbstractGuide, AbstractModel
@@ -24,8 +33,8 @@ class AbstractLoss(eqx.Module):
     @abstractmethod
     def __call__(
         self,
-        params: AbstractGuide,
-        static: AbstractGuide,
+        params: tuple[AbstractModel, AbstractGuide],
+        static: tuple[AbstractModel, AbstractGuide],
         key: PRNGKeyArray,
     ) -> Float[Scalar, " "]:
         pass
@@ -35,37 +44,34 @@ class EvidenceLowerBoundLoss(AbstractLoss):
     """The negative evidence lower bound (ELBO) loss function.
 
     Args:
-        model: Numpyro model.
         obs: The observed data.
         n_particals: The number of samples to use in the ELBO approximation.
     """
 
-    model: AbstractModel
     obs: dict[str, Array]
     n_particles: int
 
     def __init__(
         self,
         *,
-        model: AbstractModel,
         obs: dict[str, Array],
         n_particles: int,
     ):
-        self.model = model
         self.obs = obs
         self.n_particles = n_particles
 
     def __call__(
         self,
-        params: PyTree,
-        static: PyTree,
+        params: tuple[AbstractModel, AbstractGuide],
+        static: tuple[AbstractModel, AbstractGuide],
         key: PRNGKeyArray,
     ) -> Float[Scalar, ""]:
+        model, guide = unwrap(eqx.combine(params, static))
         return Trace_ELBO(self.n_particles).loss(
             key,
             {},
-            partial(self.model, obs=self.obs),
-            unwrap(eqx.combine(params, static)),
+            partial(model, obs=self.obs),
+            guide,
         )
 
 
@@ -74,12 +80,10 @@ class RenyiLoss(AbstractLoss):
 
     Args:
         alpha: alpha value.
-        model: Numpyro model.
         obs: The observed data.
         n_particles: The number of samples to use in the ELBO approximation.
     """
 
-    model: AbstractModel
     obs: dict[str, Array]
     n_particles: int
     alpha: float | int
@@ -87,27 +91,26 @@ class RenyiLoss(AbstractLoss):
     def __init__(
         self,
         *,
-        model: AbstractModel,
         obs: dict[str, Array],
         n_particles: int,
         alpha: float | int,
     ):
         self.alpha = alpha
-        self.model = model
         self.obs = obs
         self.n_particles = n_particles
 
     def __call__(
         self,
-        params: PyTree,
-        static: PyTree,
+        params: tuple[AbstractModel, AbstractGuide],
+        static: tuple[AbstractModel, AbstractGuide],
         key: PRNGKeyArray,
     ) -> Float[Scalar, ""]:
+        model, guide = unwrap(eqx.combine(params, static))
         return RenyiELBO(alpha=self.alpha, num_particles=self.n_particles).loss(
             key,
             {},
-            partial(self.model, obs=self.obs),
-            unwrap(eqx.combine(params, static)),
+            partial(model, obs=self.obs),
+            guide,
         )
 
 
@@ -119,7 +122,6 @@ class SelfNormImportanceWeightedForwardKLLoss(AbstractLoss):
     https://arxiv.org/abs/2407.15687.
 
     Args:
-        model: The model.
         n_particles: Number of particles to use in loss approximation.
         obs: The dictionary of observations.
         low_variance: Whether to add the gradient of the average variational
@@ -127,7 +129,6 @@ class SelfNormImportanceWeightedForwardKLLoss(AbstractLoss):
             variational distribution is close to the true posterior.
     """
 
-    model: AbstractModel
     n_particles: int
     obs: dict[str, Array]
     low_variance: bool
@@ -135,12 +136,10 @@ class SelfNormImportanceWeightedForwardKLLoss(AbstractLoss):
     def __init__(
         self,
         *,
-        model: AbstractModel,
         n_particles,
         obs: dict[str, Array],
         low_variance: bool = False,
     ):
-        self.model = model
         self.n_particles = n_particles
         self.obs = obs
         self.low_variance = low_variance
@@ -148,18 +147,17 @@ class SelfNormImportanceWeightedForwardKLLoss(AbstractLoss):
     @eqx.filter_jit
     def __call__(
         self,
-        params: AbstractGuide,
-        static: AbstractGuide,
+        params: tuple[AbstractModel, AbstractGuide],
+        static: tuple[AbstractModel, AbstractGuide],
         key: PRNGKeyArray,
     ) -> Float[Scalar, ""]:
-
-        proposal = unwrap(eqx.combine(stop_gradient(params), static))
-        guide = unwrap(eqx.combine(params, static))
+        model, guide = unwrap(eqx.combine(params, static))
+        proposal = unwrap(eqx.combine(stop_gradient(params[1]), static[1]))
         samples, proposal_lps = jax.vmap(proposal.sample_and_log_prob)(
             jr.split(key, self.n_particles),
         )
 
-        joint_lps = jax.vmap(lambda latents: self.model.log_prob(latents | self.obs))(
+        joint_lps = jax.vmap(lambda latents: model.log_prob(latents | self.obs))(
             samples,
         )
 
@@ -177,7 +175,6 @@ class SoftContrastiveEstimationLoss(AbstractLoss):
     """The SoftCVI loss function.
 
     Args:
-        model: The model.
         n_particles: The number of particles used for estimating the loss.
         obs: The dictionary of observations.
         alpha: Tempering parameter on the interval [0, 1] applied to the negative
@@ -188,7 +185,6 @@ class SoftContrastiveEstimationLoss(AbstractLoss):
             "proposal".
     """
 
-    model: AbstractModel
     n_particles: int
     obs: dict[str, Array]
     alpha: int | float
@@ -197,7 +193,6 @@ class SoftContrastiveEstimationLoss(AbstractLoss):
     def __init__(
         self,
         *,
-        model: AbstractModel,
         n_particles: int,
         obs: dict[str, Array],
         alpha: int | float,
@@ -208,7 +203,6 @@ class SoftContrastiveEstimationLoss(AbstractLoss):
             raise ValueError(
                 "Need at least two particles for classification objective.",
             )
-        self.model = model
         self.n_particles = n_particles
         self.obs = obs
         self.alpha = alpha
@@ -217,23 +211,23 @@ class SoftContrastiveEstimationLoss(AbstractLoss):
     @eqx.filter_jit
     def __call__(
         self,
-        params: AbstractGuide,
-        static: AbstractGuide,
+        params: tuple[AbstractModel, AbstractGuide],
+        static: tuple[AbstractModel, AbstractGuide],
         key: PRNGKeyArray,
     ) -> Float[Scalar, ""]:
-        proposal = unwrap(eqx.combine(stop_gradient(params), static))
-        guide = unwrap(eqx.combine(params, static))
+        model, guide = unwrap(eqx.combine(params, static))
+        proposal = unwrap(eqx.combine(stop_gradient(params[1]), static[1]))
 
         def get_log_probs(key):
 
             if self.negative_distribution == "posterior":
                 latents = proposal.sample(key)
-                joint_lp = self.model.log_prob(latents | self.obs)
+                joint_lp = model.log_prob(latents | self.obs)
                 negative_lp = joint_lp * self.alpha
             else:
                 assert self.negative_distribution == "proposal"
                 latents, proposal_lp = proposal.sample_and_log_prob(key)
-                joint_lp = self.model.log_prob(latents | self.obs)
+                joint_lp = model.log_prob(latents | self.obs)
                 negative_lp = proposal_lp * self.alpha
 
             return {
