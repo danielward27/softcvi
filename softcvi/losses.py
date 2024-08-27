@@ -6,7 +6,7 @@ key as the third. This supports trainable parameters in both the model and guide
 As such, for all inexact arrays in the model and guide, explicitly marking them
 as non-trainable is required if they should be considered fixed, for example using
 using ``flowjax.wrappers.non_trainable``, or by accessing with a property that
-applies  ``jax.lax.stop_gradient``.
+applies ``jax.lax.stop_gradient``.
 """
 
 from abc import abstractmethod
@@ -17,12 +17,12 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
-import optax
 from flowjax.wrappers import unwrap
 from jax import nn
 from jax.lax import stop_gradient
 from jaxtyping import Array, Float, PRNGKeyArray, Scalar
 from numpyro.infer import RenyiELBO, Trace_ELBO
+from optax.losses import softmax_cross_entropy
 
 from softcvi.models import AbstractGuide, AbstractModel
 
@@ -183,12 +183,16 @@ class SoftContrastiveEstimationLoss(AbstractLoss):
             case we use ``stop_gradient(guide)`` as the negative distribution,
             or "posterior", in which case we use the model joint density. Defaults to
             "proposal".
+        map_multiplier: adds ``-map_multiplier*jnp.mean(model_joint)`` to the loss to
+            enable MAP training of model parameters. By default the gradient with
+            respect to the model parameters is zero.
     """
 
     n_particles: int
     obs: dict[str, Array]
     alpha: int | float
     negative_distribution: Literal["proposal", "posterior"]
+    map_multiplier: float | int
 
     def __init__(
         self,
@@ -197,6 +201,7 @@ class SoftContrastiveEstimationLoss(AbstractLoss):
         obs: dict[str, Array],
         alpha: int | float,
         negative_distribution: Literal["proposal", "posterior"] = "proposal",
+        map_multiplier: float | int = 0,
     ):
 
         if n_particles < 2:
@@ -207,6 +212,7 @@ class SoftContrastiveEstimationLoss(AbstractLoss):
         self.obs = obs
         self.alpha = alpha
         self.negative_distribution = negative_distribution
+        self.map_multiplier = map_multiplier
 
     @eqx.filter_jit
     def __call__(
@@ -216,28 +222,31 @@ class SoftContrastiveEstimationLoss(AbstractLoss):
         key: PRNGKeyArray,
     ) -> Float[Scalar, ""]:
         model, guide = unwrap(eqx.combine(params, static))
-        proposal = unwrap(eqx.combine(stop_gradient(params[1]), static[1]))
+        stop_grad_model, proposal = unwrap(eqx.combine(stop_gradient(params), static))
 
         def get_log_probs(key):
 
             if self.negative_distribution == "posterior":
                 latents = proposal.sample(key)
-                joint_lp = model.log_prob(latents | self.obs)
-                negative_lp = joint_lp * self.alpha
+                joint_stop_grad_lp = stop_grad_model.log_prob(latents | self.obs)
+                negative_lp = joint_stop_grad_lp * self.alpha
             else:
                 assert self.negative_distribution == "proposal"
                 latents, proposal_lp = proposal.sample_and_log_prob(key)
-                joint_lp = model.log_prob(latents | self.obs)
+                joint_stop_grad_lp = stop_grad_model.log_prob(latents | self.obs)
                 negative_lp = proposal_lp * self.alpha
 
             return {
-                "joint": joint_lp,
+                "joint_stop_grad": joint_stop_grad_lp,
                 "negative": negative_lp,
                 "guide": guide.log_prob(latents),
+                "joint": model.log_prob(latents | self.obs),
             }
 
         key, subkey = jr.split(key)
         log_probs = jax.vmap(get_log_probs)(jr.split(subkey, self.n_particles))
-        labels = nn.softmax(log_probs["joint"] - log_probs["negative"])
+        labels = nn.softmax(log_probs["joint_stop_grad"] - log_probs["negative"])
         log_predictions = nn.log_softmax(log_probs["guide"] - log_probs["negative"])
-        return optax.losses.softmax_cross_entropy(log_predictions, labels).mean()
+        loss = softmax_cross_entropy(log_predictions, labels).mean()
+        map_term = self.map_multiplier * jnp.mean(log_probs["joint"])
+        return loss - jnp.mean(map_term)
