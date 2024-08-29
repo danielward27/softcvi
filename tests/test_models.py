@@ -2,17 +2,22 @@
 
 import jax.numpy as jnp
 import jax.random as jr
+import numpyro
 import pytest
 from flowjax.bijections import Affine, Exp
 from flowjax.distributions import Laplace, LogNormal, Normal, Transformed
 from flowjax.experimental.numpyro import sample
 from numpyro import plate
 
-from softcvi.models import AbstractGuide, AbstractModel
+from softcvi.models import (
+    AbstractGuide,
+    AbstractReparameterizedModel,
+    NumpyroModelToModel,
+)
 
 
 def simple_model_and_guide():
-    class Model(AbstractModel):
+    class Model(AbstractReparameterizedModel):
         reparameterized: bool | None = None
         reparam_names = {"a", "b"}
         observed_names = {"c"}
@@ -26,7 +31,7 @@ def simple_model_and_guide():
         a_base: Normal = Normal(3, 4)
         b_base: Laplace = Laplace(3, 4)
 
-        def __call__(self):
+        def __call__(self, obs=None):
             sample("a_base", self.a_base)
             sample("b_base", self.b_base)
 
@@ -34,7 +39,7 @@ def simple_model_and_guide():
 
 
 def plate_model_and_guide():
-    class PlateModel(AbstractModel):
+    class PlateModel(AbstractReparameterizedModel):
         reparameterized: bool | None = None
         reparam_names = {"scale", "theta"}
         observed_names = {"x"}
@@ -50,7 +55,7 @@ def plate_model_and_guide():
         scale_base: Laplace = Laplace(1)
         theta_base: Laplace = Laplace(1)
 
-        def __call__(self):
+        def __call__(self, obs=None):
             sample("scale_base", self.scale_base)
             with plate("dim", 2):
                 sample("theta_base", self.theta_base)
@@ -69,7 +74,7 @@ def test_log_prob_original_space():
     ).log_prob(
         data["b"],
     )
-    log_prob = guide.log_prob_original_space(data, obs=None, model=model)
+    log_prob = guide.log_prob_original_space(data, model=model, obs=None)
     expected = a_log_prob + b_log_prob
     assert pytest.approx(expected) == log_prob
 
@@ -84,7 +89,7 @@ def test_log_prob_original_space():
         ),
     ]
     expected = sum(arr.sum() for arr in expected)
-    realized = guide.log_prob_original_space(data, obs=None, model=model)
+    realized = guide.log_prob_original_space(data, model=model, obs=None)
     assert pytest.approx(expected) == realized
 
 
@@ -147,3 +152,24 @@ def test_latents_to_original_space():
     original_space_1 = model.reparam(set_val=False).prior.sample(jr.PRNGKey(0))
     original_space_2 = model.latents_to_original_space(latents, obs=None)
     assert original_space_1 == original_space_2
+
+
+def test_validate_data():
+
+    def model(obs=None):
+        with numpyro.plate("plate", 5):
+            x = sample("x", numpyro.distributions.Normal())
+        sample("y", numpyro.distributions.Normal(x), obs=obs)
+
+    model = NumpyroModelToModel(model, observed_names={"y"}, reparam_names=set())
+    model = model.reparam(set_val=False)
+
+    with pytest.raises(ValueError, match="does not exist in trace"):
+        model.validate_data({"z": jnp.ones(5), "x": jnp.ones(5)})
+
+    with pytest.raises(ValueError, match="shape"):
+        model.validate_data({"x": jnp.ones(5), "y": jnp.ones(())})
+
+    # Shouldn't raise
+    assert model.validate_data({"x": jnp.ones(5), "y": jnp.ones(5)}) is None
+    assert model.validate_data({"x": jnp.ones(5)}) is None

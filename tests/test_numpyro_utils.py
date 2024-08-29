@@ -10,7 +10,6 @@ from softcvi.numpyro_utils import (
     get_sample_site_names,
     trace_to_distribution_transforms,
     trace_to_log_prob,
-    validate_data_and_model_match,
 )
 
 
@@ -77,37 +76,3 @@ def test_get_sample_site_names():
     assert names.observed == {"y"}
     assert names.latent == {"x"}
     assert names.all == {"x", "y"}
-
-
-def test_validate_data_and_model_match():
-
-    assert (
-        validate_data_and_model_match(
-            data={"x": jnp.ones(5), "y": jnp.ones(5)},
-            model=model,
-        )
-        is None
-    )  # Doesn't raise
-
-    # check allows missing sites by default
-    assert (
-        validate_data_and_model_match(
-            data={"x": jnp.ones(5)},
-            model=model,
-        )
-        is None
-    )  # Doesn't raise
-
-    # Check assert present works
-    with pytest.raises(ValueError, match="Expected y to be provided"):
-        validate_data_and_model_match(
-            data={"x": jnp.ones(5)},
-            model=model,
-            assert_present=["y"],
-        )
-
-    with pytest.raises(ValueError, match="does not exist in trace"):
-        validate_data_and_model_match({"z": jnp.ones(5), "x": jnp.ones(5)}, model)
-
-    with pytest.raises(ValueError, match="shape"):
-        validate_data_and_model_match({"x": jnp.ones(5), "y": jnp.ones(())}, model)
