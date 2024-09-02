@@ -13,6 +13,7 @@ method.
 
 from abc import abstractmethod
 from collections.abc import Callable, Iterable
+from typing import ClassVar
 
 import equinox as eqx
 from flowjax.wrappers import unwrap
@@ -125,16 +126,66 @@ class AbstractProbabilisticProgram(eqx.Module):
         return get_sample_site_names(unwrap(self), *args, **kwargs).all
 
 
-# TODO create AbstractModel <: AbstractReparameterizedModel
-class AbstractReparameterizedModel(AbstractProbabilisticProgram):
-    """Abstract class used for numpyro models.
+class AbstractModel(AbstractProbabilisticProgram):
+    """Abstract class used for model component."""
 
-    The class serves two purposes:
-        1) Facilitating easy and togglable reparameterization.
-        2) Giving access to a more readable methods for sampling and density evaluation.
+    observed_names: eqx.AbstractVar[set[str] | frozenset[str]]
+
+    @property
+    def latent_names(self):
+        return self.site_names() - self.observed_names
+
+    def sample_predictive(
+        self,
+        key: PRNGKeyArray,
+        latents: dict[str, Array],
+    ):
+        """Sample a single sample from the predictive/likelihood distribution.
+
+        To generate mutiple samples, use e.g. jax.vmap over a set of keys.
+        """
+        self = unwrap(self)
+        self.validate_data(latents)
+        _check_present(self.latent_names, latents)
+        conditioned = handlers.seed(handlers.condition(self, data=latents), key)
+        predictive = handlers.trace(conditioned).get_trace()
+        return {name: predictive[name]["value"] for name in self.observed_names}
+
+    def log_likelihood(
+        self,
+        latents: dict[str, Array],
+        obs: dict[str, Array],
+        *,
+        reduce: bool = True,
+    ):
+        self = unwrap(self)
+        self.validate_data(latents | obs)
+        _check_present(self.latent_names, latents)
+        _check_present(self.observed_names, obs)
+        trace = handlers.trace(handlers.substitute(self, latents)).get_trace(obs=obs)
+        obs_trace = {k: v for k, v in trace.items() if k in self.observed_names}
+        return trace_to_log_prob(obs_trace, reduce=reduce)
+
+    @property
+    def prior(self):
+        """Get the prior distribution.
+
+        This assumes that no latent variables are children of the observed nodes.
+        """
+        dummy_obs = {k: ShapeDtypeStruct((), float) for k in self.observed_names}
+        model = handlers.condition(self, dummy_obs)  # To avoid sampling observed nodes
+        return NumpyroModelToModel(
+            handlers.block(model, hide=self.observed_names),
+            observed_names=frozenset({}),
+            reparam_names=self.reparam_names,
+            reparameterized=self.reparameterized,
+        )
+
+
+class AbstractReparameterizedModel(AbstractModel):
+    """Abstract class used for a reparameterized numpyro.
 
     Attributes:
-        observed_names: Names for the observed nodes.
         reparam_names:  Names of latents to which TransformReparam is applied,
             if the reparameterized flag is set to True. This will reparameterize
             any numpyro or flowjax transformed distributions.
@@ -144,7 +195,6 @@ class AbstractReparameterizedModel(AbstractProbabilisticProgram):
             the reparameterized or original model.
     """
 
-    observed_names: eqx.AbstractVar[set[str] | frozenset[str]]
     reparam_names: eqx.AbstractVar[set[str] | frozenset[str]]
     reparameterized: eqx.AbstractVar[bool | None]
 
@@ -170,10 +220,6 @@ class AbstractReparameterizedModel(AbstractProbabilisticProgram):
                 self.call_without_reparam(obs=obs)
         else:
             self.call_without_reparam(obs=obs)
-
-    @property
-    def latent_names(self):
-        return self.site_names() - self.observed_names
 
     def reparam(self, *, set_val: bool | None = True):
         """Returns a copy of the model, with the reparameterized flag changed."""
@@ -207,37 +253,6 @@ class AbstractReparameterizedModel(AbstractProbabilisticProgram):
         transforms = trace_to_distribution_transforms(model_trace)
         return {k: t for k, t in transforms.items() if k in self.reparam_names}
 
-    def sample_predictive(
-        self,
-        key: PRNGKeyArray,
-        latents: dict[str, Array],
-    ):
-        """Sample a single sample from the predictive/likelihood distribution.
-
-        To generate mutiple samples, use e.g. jax.vmap over a set of keys.
-        """
-        self = unwrap(self)
-        self.validate_data(latents)
-        _check_present(self.latent_names, latents)
-        conditioned = handlers.seed(handlers.condition(self, data=latents), key)
-        predictive = handlers.trace(conditioned).get_trace()
-        return {name: predictive[name]["value"] for name in self.observed_names}
-
-    def log_likelihood(
-        self,
-        latents: dict[str, Array],
-        obs: dict[str, Array],
-        *,
-        reduce: bool = True,
-    ):
-        self = unwrap(self)
-        self.validate_data(latents | obs)
-        _check_present(self.latent_names, latents)
-        _check_present(self.observed_names, obs)
-        trace = handlers.trace(handlers.substitute(self, latents)).get_trace(obs=obs)
-        obs_trace = {k: v for k, v in trace.items() if k in self.observed_names}
-        return trace_to_log_prob(obs_trace, reduce=reduce)
-
     def latents_to_original_space(
         self,
         latents: dict[str, Array],
@@ -265,20 +280,27 @@ class AbstractReparameterizedModel(AbstractProbabilisticProgram):
             latents[name] = trace[name]["value"]
         return latents
 
-    @property
-    def prior(self):
-        """Get the prior distribution.
 
-        This assumes that no latent variables are children of the observed nodes.
-        """
-        dummy_obs = {k: ShapeDtypeStruct((), float) for k in self.observed_names}
-        model = handlers.condition(self, dummy_obs)  # To avoid sampling observed nodes
-        return NumpyroModelToModel(
-            handlers.block(model, hide=self.observed_names),
-            observed_names=frozenset({}),
-            reparam_names=self.reparam_names,
-            reparameterized=self.reparameterized,
-        )
+class ModelToReparameterized(AbstractReparameterizedModel):
+    """Wrapper class to mimic a reparameterized model.
+
+    This does not perform any reparameterization, but provides a wrapper of an
+    AbstractModel into an AbstractReparameterizedModel with zero reparameterized sites.
+    This prevents e.g. frequent use of ``if AbstractReparameterizedModel: ...``.
+    """
+
+    model: AbstractModel
+    observed_names: frozenset[str]
+    reparameterized: bool | None = False  # No effect if set to true
+    reparam_names: ClassVar[frozenset] = frozenset()
+
+    def __init__(self, model: AbstractModel):
+        self.model = model
+        self.observed_names = frozenset(model.observed_names)
+        self.reparameterized = False
+
+    def call_without_reparam(self, obs: dict[str, Array] | None = None):
+        return self.model(obs)
 
 
 class NumpyroModelToModel(AbstractReparameterizedModel):

@@ -10,7 +10,6 @@ accessing through a property that applies ``jax.lax.stop_gradient``.
 """
 
 from abc import abstractmethod
-from functools import partial
 from typing import Literal
 
 import equinox as eqx
@@ -21,7 +20,6 @@ from flowjax.wrappers import unwrap
 from jax import nn
 from jax.lax import stop_gradient
 from jaxtyping import Array, Float, PRNGKeyArray, Scalar
-from numpyro.infer import RenyiELBO, Trace_ELBO
 from optax.losses import softmax_cross_entropy
 
 from softcvi.models import AbstractGuide, AbstractReparameterizedModel
@@ -65,49 +63,14 @@ class EvidenceLowerBoundLoss(AbstractLoss):
         key: PRNGKeyArray,
     ) -> Float[Scalar, ""]:
         model, guide = unwrap(eqx.combine(params, static))
-        return Trace_ELBO(self.n_particles).loss(
-            key,
-            {},
-            partial(model, obs=obs),
-            guide,
-        )
 
+        @jax.vmap
+        def elbo(key):
+            latents, guide_log_prob = guide.sample_and_log_prob(key, obs)
+            model_log_prob = model.log_prob(latents | obs)
+            return model_log_prob - guide_log_prob
 
-class RenyiLoss(AbstractLoss):
-    """Wraps numpyro Renyi objective. See https://arxiv.org/abs/1602.02311.
-
-    Args:
-        alpha: alpha value.
-        obs: The observed data.
-        n_particles: The number of samples to use in the ELBO approximation.
-    """
-
-    n_particles: int
-    alpha: float | int
-
-    def __init__(
-        self,
-        *,
-        n_particles: int,
-        alpha: float | int,
-    ):
-        self.alpha = alpha
-        self.n_particles = n_particles
-
-    def __call__(
-        self,
-        params: tuple[AbstractReparameterizedModel, AbstractGuide],
-        static: tuple[AbstractReparameterizedModel, AbstractGuide],
-        obs: dict[str, Array],
-        key: PRNGKeyArray,
-    ) -> Float[Scalar, ""]:
-        model, guide = unwrap(eqx.combine(params, static))
-        return RenyiELBO(alpha=self.alpha, num_particles=self.n_particles).loss(
-            key,
-            {},
-            partial(model, obs=obs),
-            guide,
-        )
+        return -jnp.mean(elbo(jr.split(key, self.n_particles)))
 
 
 class SelfNormImportanceWeightedForwardKLLoss(AbstractLoss):
@@ -146,14 +109,15 @@ class SelfNormImportanceWeightedForwardKLLoss(AbstractLoss):
     ) -> Float[Scalar, ""]:
         model, guide = unwrap(eqx.combine(params, static))
         proposal = unwrap(eqx.combine(stop_gradient(params[1]), static[1]))
-        samples, proposal_lps = jax.vmap(proposal.sample_and_log_prob)(
+        samples, proposal_lps = jax.vmap(proposal.sample_and_log_prob, (0, None))(
             jr.split(key, self.n_particles),
+            obs,
         )
 
         joint_lps = jax.vmap(lambda latents: model.log_prob(latents | obs))(samples)
         log_weights = joint_lps - proposal_lps
         normalized_weights = nn.softmax(log_weights)
-        guide_lps = jax.vmap(guide.log_prob)(samples)
+        guide_lps = jax.vmap(guide.log_prob, (0, None))(samples, obs)
         loss = jnp.sum(normalized_weights * (joint_lps - guide_lps))
         if self.low_variance:
             mean_lp = jnp.mean(guide_lps)
@@ -217,19 +181,19 @@ class SoftContrastiveEstimationLoss(AbstractLoss):
         def get_log_probs(key):
 
             if self.negative_distribution == "posterior":
-                latents = proposal.sample(key)
+                latents = proposal.sample(key, obs=obs)
                 positive_lp = stop_grad_model.log_prob(latents | obs)
                 negative_lp = positive_lp * self.alpha
             else:
                 assert self.negative_distribution == "proposal"
-                latents, proposal_lp = proposal.sample_and_log_prob(key)
+                latents, proposal_lp = proposal.sample_and_log_prob(key, obs=obs)
                 positive_lp = stop_grad_model.log_prob(latents | obs)
                 negative_lp = proposal_lp * self.alpha
 
             log_probs = {
                 "positive": positive_lp,
                 "negative": negative_lp,
-                "guide": guide.log_prob(latents),
+                "guide": guide.log_prob(latents, obs=obs),
             }
 
             if self.elbo_optimize_model:
