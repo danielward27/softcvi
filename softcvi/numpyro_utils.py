@@ -1,13 +1,12 @@
 """Numpyro utility functions."""
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
 
 import jax.random as jr
 from jax import eval_shape
 from jax.tree_util import Partial, tree_map
-from jaxtyping import Array
 from numpyro import distributions as ndist
 from numpyro import handlers
 from numpyro.distributions.util import is_identically_one
@@ -139,44 +138,3 @@ def trace_to_log_prob(trace: dict, *, reduce: bool = True):
     if reduce:
         log_prob = sum(v.sum() for v in log_prob.values())
     return log_prob
-
-
-def validate_data_and_model_match(
-    data: dict[str, Array],
-    model: Callable,
-    *args,
-    assert_present: Iterable[str] | None = None,
-    **kwargs,
-):
-    """Validate the data and model match (names and shapes).
-
-    For each site in data, validate that the shapes match what is produced by the
-    model. Note, if you have batch dimensions in data, this function must be vectorized,
-    e.g. using eqx.filter_vmap.
-
-    Args:
-        data: The data.
-        model: The model.
-        *args: Args passed to model when tracing to infer shapes.
-        assert_present: An iterable of site names to check are provided in data.
-            Defaults to None.
-        **kwargs: kwargs passed to model when tracing to infer shapes.
-    """
-    # TODO allow auxilary sites in guide?
-    if assert_present is not None:
-        for site in assert_present:
-            if site not in data:
-                raise ValueError(f"Expected {site} to be provided in data.")
-
-    trace = shape_only_trace(model, *args, **kwargs)
-    for name, samples in data.items():
-        if name not in trace:
-            raise ValueError(f"Got {name} which does not exist in trace.")
-
-        trace_shape = trace[name]["value"].shape
-
-        if trace[name]["type"] == "sample" and trace_shape != data[name].shape:
-            raise ValueError(
-                f"{name} had shape {trace_shape} in model, but shape "
-                f"{samples.shape} in data.",
-            )
