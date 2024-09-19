@@ -54,7 +54,7 @@ def test_losses_run(loss):
     loss_val = loss(
         *eqx.partition((model, guide), eqx.is_inexact_array),
         obs={"b": jnp.array(jnp.arange(3))},
-        key=jr.PRNGKey(0),
+        key=jr.key(0),
     )
     assert loss_val.shape == ()
 
@@ -114,7 +114,7 @@ def test_grad_zero_at_optimum(loss, *, expect_zero_grad: bool):
     model = Model().reparam(set_val=True)
     guide = OptimalGuide(obs)
     params, static = eqx.partition((model, guide), eqx.is_inexact_array)
-    grad = jax.grad(loss)(params, static, obs=obs, key=jr.PRNGKey(1))
+    grad = jax.grad(loss)(params, static, obs=obs, key=jr.key(1))
     grad = jax.flatten_util.ravel_pytree(grad)[0]
     is_zero_grad = pytest.approx(grad, abs=1e-5) == 0
     assert is_zero_grad is expect_zero_grad
@@ -140,7 +140,7 @@ def test_snis_fkl_softcvi_equivilance():
     grads = []
     for loss in [softcvi_loss, snis_fkl_loss]:
         params, static = eqx.partition((model, guide), eqx.is_inexact_array)
-        grad = jax.grad(loss)(params, static, obs=obs, key=jr.PRNGKey(0))
+        grad = jax.grad(loss)(params, static, obs=obs, key=jr.key(0))
         grads.append(jax.flatten_util.ravel_pytree(grad)[0])
 
     assert pytest.approx(grads[0]) == grads[1]

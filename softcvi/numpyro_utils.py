@@ -28,10 +28,10 @@ def shape_only_trace(model: Callable, *args, **kwargs):
     # Adapted from https://github.com/pyro-ppl/numpyro/blob/5af9ebda72bd7aeb08c61e4248ecd0d982473224/numpyro/infer/inspect.py#L39
     def get_trace(fn):
         fn = handlers.substitute(
-            handlers.seed(model, 0),
+            handlers.seed(model, jr.key(0)),
             substitute_fn=init_to_sample,
         )  # Support improper uniform
-        fn = handlers.seed(fn, jr.PRNGKey(0))
+        fn = handlers.seed(fn, jr.key(0))
         trace = handlers.trace(fn).get_trace(*args, **kwargs)
 
         # We wrap all callables to ensure return value are all valid jax types
