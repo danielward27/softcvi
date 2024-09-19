@@ -148,8 +148,8 @@ def test_prior_log_density():
 
 def test_latents_to_original_space():
     model, _ = simple_model_and_guide()
-    latents = model.reparam(set_val=True).prior.sample(jr.PRNGKey(0))
-    original_space_1 = model.reparam(set_val=False).prior.sample(jr.PRNGKey(0))
+    latents = model.reparam(set_val=True).prior.sample(jr.key(0))
+    original_space_1 = model.reparam(set_val=False).prior.sample(jr.key(0))
     original_space_2 = model.latents_to_original_space(latents, obs=None)
     assert original_space_1 == original_space_2
 

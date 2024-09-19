@@ -21,7 +21,7 @@ def model(obs=None):
 
 def test_trace_to_log_prob():
     obs = jnp.arange(5)
-    trace = handlers.trace(handlers.seed(model, jr.PRNGKey(0))).get_trace(obs=obs)
+    trace = handlers.trace(handlers.seed(model, jr.key(0))).get_trace(obs=obs)
     log_probs = trace_to_log_prob(trace, reduce=False)
 
     assert log_probs["x"].shape == (5,)
@@ -37,7 +37,7 @@ def test_trace_to_log_prob_factor():
         sample("x", numpyro.distributions.Uniform())
         numpyro.factor("factor", 20)
 
-    trace = handlers.trace(handlers.seed(factor_model, jr.PRNGKey(0))).get_trace()
+    trace = handlers.trace(handlers.seed(factor_model, jr.key(0))).get_trace()
     assert pytest.approx(20) == trace_to_log_prob(trace, reduce=True)
 
 
